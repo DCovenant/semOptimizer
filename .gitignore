@@ -1,2 +1,10 @@
 .venv/
+.venv312/
+carla/
+CARLA_0.9.15.tar.gz
+data/
+*.pt
+__pycache__/
+lane_calibration.json
+intersection.json
 
