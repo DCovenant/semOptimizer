@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (QApplication, QDockWidget, QFileDialog, QHeaderVi
                                QLabel, QMainWindow, QMessageBox, QTableWidget,
                                QTableWidgetItem, QToolBar, QVBoxLayout, QWidget)
 
-from app.config import DEFAULT_PHASE, DIRECTIONS, YOLO_MODEL
+from app.config import DEFAULT_PHASE, YOLO_MODEL
 from app.core.calibration import load_calibration, save_calibration
 from app.core.detection import detect_vehicles, load_model
 from app.graphics.canvas import Canvas
@@ -73,8 +73,7 @@ class LaneCalibrationWindow(QMainWindow):
 
         act("Open image", self.on_open_image)
         tb.addSeparator()
-        act("Add incoming", lambda: self.on_add_lane("incoming"))
-        act("Add outgoing", lambda: self.on_add_lane("outgoing"))
+        act("Add incoming lane", self.on_add_lane)
         act("Finish lane", self.on_finish_lane)
         act("Delete lane", self.on_delete_lane)
         tb.addSeparator()
@@ -90,8 +89,8 @@ class LaneCalibrationWindow(QMainWindow):
         panel = QWidget()
         lay = QVBoxLayout(panel)
 
-        self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["Lane", "Dir", "Phase", "Count"])
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(["Lane", "Phase", "Count"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.cellChanged.connect(self.on_cell_edited)
         lay.addWidget(self.table)
@@ -99,7 +98,7 @@ class LaneCalibrationWindow(QMainWindow):
         self.demand_label = QLabel("incoming demand: —")
         self.demand_label.setWordWrap(True)
         lay.addWidget(self.demand_label)
-        self.extra_label = QLabel("outgoing: 0    ignored/parked: 0")
+        self.extra_label = QLabel("ignored/parked: 0")
         self.extra_label.setWordWrap(True)
         lay.addWidget(self.extra_label)
 
@@ -123,16 +122,17 @@ class LaneCalibrationWindow(QMainWindow):
             self.load_image(path)
 
     # lanes -----------------------------------------------------------------
-    def on_add_lane(self, direction):
+    def on_add_lane(self):
         if self.canvas.pixmap_item is None:
             QMessageBox.information(self, "No image", "Open a camera frame first.")
             return
         if self.canvas.mode == "add":
             self.on_finish_lane()
         name = f"lane_{len(self.canvas.lanes)}"
-        self.canvas.start_lane(name, direction)
+        self.canvas.start_lane(name, "incoming")
         self.statusBar().showMessage(
-            f"Drawing {name} ({direction}): left-click corners, then 'Finish lane'.")
+            f"Drawing {name}: left-click corners, then 'Finish lane'. "
+            f"Anything outside an incoming lane is counted as parked/ignored.")
 
     def on_finish_lane(self):
         lane = self.canvas.finish_lane()
@@ -188,9 +188,8 @@ class LaneCalibrationWindow(QMainWindow):
         self.table.setRowCount(len(self.canvas.lanes))
         for r, lane in enumerate(self.canvas.lanes):
             self.table.setItem(r, 0, _ro_item(lane.name))
-            self.table.setItem(r, 1, QTableWidgetItem(lane.direction))   # editable
-            self.table.setItem(r, 2, QTableWidgetItem(lane.phase))       # editable
-            self.table.setItem(r, 3, _ro_item(str(counts[lane.name])))
+            self.table.setItem(r, 1, QTableWidgetItem(lane.phase))       # editable
+            self.table.setItem(r, 2, _ro_item(str(counts[lane.name])))
         self.table.blockSignals(False)
         self.update_demand(counts, ignored)
 
@@ -198,25 +197,18 @@ class LaneCalibrationWindow(QMainWindow):
         if row >= len(self.canvas.lanes):
             return
         lane = self.canvas.lanes[row]
-        if col == 1:   # direction
-            val = self.table.item(row, 1).text().strip().lower()
-            lane.set_direction(val if val in DIRECTIONS else "incoming")
-            self.canvas.recolor_lanes()
-        elif col == 2:  # phase
-            lane.phase = self.table.item(row, 2).text().strip() or DEFAULT_PHASE
+        if col == 1:   # phase
+            lane.phase = self.table.item(row, 1).text().strip() or DEFAULT_PHASE
         self.recompute()
 
     def update_demand(self, counts, ignored):
-        demand, outgoing = {}, 0
-        for lane in self.canvas.lanes:
+        demand = {}
+        for lane in self.canvas.lanes:        # every lane is incoming
             n = counts.get(lane.name, 0)
-            if lane.direction == "incoming":
-                demand[lane.phase] = demand.get(lane.phase, 0) + n
-            else:
-                outgoing += n
+            demand[lane.phase] = demand.get(lane.phase, 0) + n
         txt = "  ".join(f"{p}: {n}" for p, n in sorted(demand.items())) if demand else "—"
         self.demand_label.setText(f"incoming demand → {txt}")
-        self.extra_label.setText(f"outgoing: {outgoing}    ignored/parked: {ignored}")
+        self.extra_label.setText(f"ignored/parked: {ignored}")
 
     # calibration in/out ----------------------------------------------------
     def current_calibration(self):
@@ -232,12 +224,11 @@ class LaneCalibrationWindow(QMainWindow):
         }
 
     def _apply_calibration(self, data):
-        directions = data.get("directions", {})
         phases = data.get("phases", {})
         self.canvas.clear_lanes()
         for name, pts in data.get("lanes", {}).items():
             lane = Lane(name, self.canvas,
-                        directions.get(name, "incoming"),
+                        "incoming",                 # incoming-only calibration
                         phases.get(name, DEFAULT_PHASE))
             self.canvas.lanes.append(lane)
             for x, y in pts:

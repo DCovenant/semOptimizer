@@ -2,9 +2,82 @@
 from PySide6.QtGui import QColor
 
 # ── detection ────────────────────────────────────────────────────────────────
-YOLO_MODEL      = "models/yolo11n.pt"          # swap for yolo11s/m for more accuracy
+# YOLOv8 (not v11): the venv is Python 3.7 (pinned by the CARLA egg), so it's
+# stuck on ultralytics 8.0.x, which predates YOLO11's C3k2 block. yolo11*.pt
+# will fail to load here — use yolov8*.pt (swap n→s/m for more accuracy).
+YOLO_MODEL      = "models/yolov8n.pt"   # static-image path only (3.7 in-process)
+
+# Detection confidence for the live per-frame detector. Moderate: with no
+# tracker to stabilise things, very low conf just spawns background false boxes
+# that inflate demand. Per-frame flicker is absorbed by smoothing the demand
+# signal (DEMAND_SMOOTHING), not by tracking individual cars.
+DETECT_CONF     = 0.15
+
+# Demand smoothing: the per-arm weighted demand is the signal that feeds signal
+# timing, so it must be stable even though raw per-frame detections flicker.
+# Exponential moving average — weight of each new sample (0..1]; lower = smoother
+# but laggier. demand = α·now + (1-α)·previous.
+DEMAND_SMOOTHING = 0.2
+
+# Perceived-car-count stabilisation: the integer count jumps as detections blink
+# on/off, so we report the MEDIAN of the last N frames instead of the raw count.
+# Median rejects brief dropout frames (a lane that's usually 3 reads a steady 3)
+# without sagging toward the average the way an EMA would. Larger = steadier but
+# slower to reflect a car genuinely arriving/leaving. In frames (≈ N / fps secs).
+PERCEPTION_WINDOW = 7
+
+# Model for the live out-of-process inference service. It runs py3.12 + latest
+# ultralytics, so the py3.7 "v8 only" limit does NOT apply — use the bigger,
+# more accurate yolo11 weights. Bump down (yolo11l/m/s/n) if GPU throughput is
+# the bottleneck. Path is relative to the repo root (the service's cwd).
+SERVICE_MODEL   = "models/yolo11m.pt"
 CONF            = 0.25                  # detection confidence threshold
 VEHICLE_CLASSES = {1, 2, 3, 5, 7}       # COCO: bicycle, car, motorcycle, bus, truck
+
+# ── live tracking / analysis ───────────────────────────────────────────────────
+TRACKER           = "bytetrack.yaml"    # Ultralytics built-in tracker config
+ANALYSIS_INTERVAL = 0.15                # seconds between live analysis passes (~6-7 Hz)
+
+# ── camera capture ─────────────────────────────────────────────────────────────
+# Capture resolution is decoupled from the on-screen tile: cameras render at
+# this (high) resolution into an off-screen buffer, the inference client crops
+# the lane ROI from it at full detail, and the display tiles just downscale it.
+# Raising this improves recall on distant queued cars (the ROI crop carries more
+# pixels) at the cost of CARLA GPU render time. NOTE: lane calibration polygons
+# live in capture-pixel coordinates — change this and you must re-calibrate.
+CAPTURE_W = 1920
+CAPTURE_H = 1080
+
+# Minimum sim-seconds between camera captures. The app runs CARLA in async mode,
+# so without this each 1080p camera re-renders on *every* server frame — 4 of
+# them starve the GPU, the server FPS craters, and the async Traffic Manager
+# goes unstable (cars zigzag / drive off the road). We only display ~10 Hz and
+# analyse ~2 Hz, so capping capture rate here costs nothing and frees the sim.
+SENSOR_TICK = 0.1   # 10 Hz
+
+# Fixed simulation step for synchronous mode. The worker drives CARLA with
+# world.tick() so physics advances this many sim-seconds per tick regardless of
+# how long rendering + GPU inference take — the sim slows in wall-clock when the
+# GPU is busy but stays physically correct (no FPS-coupled Traffic Manager
+# zigzag / off-road). 0.05 = a 20 Hz sim step (CARLA's recommended default).
+SIM_FIXED_DELTA = 0.05
+
+# Inference resolution: YOLO resizes the lane crop so its longest side == this
+# before detecting. MUST scale up with CAPTURE_* — capturing more pixels does
+# nothing for distant cars if YOLO then shrinks the crop back to 640. Higher =
+# better small/distant recall, but slower (cost grows ~quadratically). 0 = let
+# ultralytics use its default (640).
+INFER_IMGSZ = 1280
+
+
+def distance_weight(d):
+    """Weight a vehicle by its normalised distance from the stop line.
+
+    `d` in [0,1]: 0 at the stop line, 1 at the far end of the lane. Linear —
+    a car at the line counts 1.0, one at the far end ~0.0. Swap for a bucketed
+    or exponential curve to bias the timing logic differently.
+    """
+    return 1.0 - d
 
 # ── lanes ────────────────────────────────────────────────────────────────────
 DEFAULT_PHASE = "approach_A"

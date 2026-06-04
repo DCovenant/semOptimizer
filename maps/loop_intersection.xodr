@@ -1,0 +1,424 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<OpenDRIVE>
+  <header revMajor="1" revMinor="6" name="simple_intersection" version="1.0" date="2026-05-23" north="120.0" south="-120.0" east="120.0" west="-120.0">
+    <geoReference>+proj=tmerc +lat_0=0 +lon_0=0 +k=1 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs</geoReference>
+  </header>
+
+  
+  
+  
+  
+  
+
+  
+  <road name="road_west" length="250.000000" id="0" junction="-1">
+    <link>
+      <successor elementType="junction" elementId="100" />
+    </link>
+    <planView>
+      <geometry s="0.0" x="-255.000000" y="0.000000" hdg="0.0" length="250.000000">
+        <line />
+      </geometry>
+    </planView>
+    <elevationProfile><elevation s="0.0" a="0.0" b="0.0" c="0.0" d="0.0" /></elevationProfile>
+    <lateralProfile />
+    <lanes>
+      <laneSection s="0.0"><left><lane id="1" type="driving" level="false"><width sOffset="0.0" a="3.5" b="0.0" c="0.0" d="0.0" /><roadMark sOffset="0.0" type="none" material="standard" color="white" width="0.125" laneChange="none" /></lane><lane id="2" type="sidewalk" level="false"><width sOffset="0.0" a="2.0" b="0.0" c="0.0" d="0.0" /><roadMark sOffset="0.0" type="none" material="standard" color="white" width="0.125" laneChange="none" /></lane></left><center><lane id="0" type="none" level="false"><roadMark sOffset="0.0" type="broken" material="standard" color="yellow" width="0.125" laneChange="none" /></lane></center><right><lane id="-1" type="driving" level="false"><width sOffset="0.0" a="3.5" b="0.0" c="0.0" d="0.0" /><roadMark sOffset="0.0" type="none" material="standard" color="white" width="0.125" laneChange="none" /></lane><lane id="-2" type="sidewalk" level="false"><width sOffset="0.0" a="2.0" b="0.0" c="0.0" d="0.0" /><roadMark sOffset="0.0" type="none" material="standard" color="white" width="0.125" laneChange="none" /></lane></right></laneSection><laneSection s="242.0"><left><lane id="1" type="driving" level="false"><width sOffset="0.0" a="3.5" b="0.0" c="0.0" d="0.0" /><roadMark sOffset="0.0" type="none" material="standard" color="white" width="0.125" laneChange="none" /></lane><lane id="2" type="sidewalk" level="false"><width sOffset="0.0" a="2.0" b="-0.2375" c="0.0" d="0.0" /><roadMark sOffset="0.0" type="none" material="standard" color="white" width="0.125" laneChange="none" /></lane></left><center><lane id="0" type="none" level="false"><roadMark sOffset="0.0" type="none" material="standard" color="white" width="0.125" laneChange="none" /></lane></center><right><lane id="-1" type="driving" level="false"><width sOffset="0.0" a="3.5" b="0.0" c="0.0" d="0.0" /><roadMark sOffset="0.0" type="none" material="standard" color="white" width="0.125" laneChange="none" /></lane><lane id="-2" type="sidewalk" level="false"><width sOffset="0.0" a="2.0" b="-0.2375" c="0.0" d="0.0" /><roadMark sOffset="0.0" type="none" material="standard" color="white" width="0.125" laneChange="none" /></lane></right></laneSection></lanes>
+  <signals><signal s="235.00" t="-4.50" id="001" name="tl_road_west" dynamic="yes" orientation="+" zOffset="5.0" country="OpenDRIVE" type="1000001" subtype="-1" value="-1" height="3.0" width="0.5"><validity fromLane="-1" toLane="-1" /></signal></signals></road>
+
+  
+  <road name="road_east" length="250.000000" id="1" junction="-1">
+    <link>
+      <successor elementType="junction" elementId="100" />
+    </link>
+    <planView>
+      <geometry s="0.0" x="255.000000" y="-0.000000" hdg="3.141592653589793" length="250.000000">
+        <line />
+      </geometry>
+    </planView>
+    <elevationProfile><elevation s="0.0" a="0.0" b="0.0" c="0.0" d="0.0" /></elevationProfile>
+    <lateralProfile />
+    <lanes>
+      <laneSection s="0.0"><left><lane id="1" type="driving" level="false"><width sOffset="0.0" a="3.5" b="0.0" c="0.0" d="0.0" /><roadMark sOffset="0.0" type="none" material="standard" color="white" width="0.125" laneChange="none" /></lane><lane id="2" type="sidewalk" level="false"><width sOffset="0.0" a="2.0" b="0.0" c="0.0" d="0.0" /><roadMark sOffset="0.0" type="none" material="standard" color="white" width="0.125" laneChange="none" /></lane></left><center><lane id="0" type="none" level="false"><roadMark sOffset="0.0" type="broken" material="standard" color="yellow" width="0.125" laneChange="none" /></lane></center><right><lane id="-1" type="driving" level="false"><width sOffset="0.0" a="3.5" b="0.0" c="0.0" d="0.0" /><roadMark sOffset="0.0" type="none" material="standard" color="white" width="0.125" laneChange="none" /></lane><lane id="-2" type="sidewalk" level="false"><width sOffset="0.0" a="2.0" b="0.0" c="0.0" d="0.0" /><roadMark sOffset="0.0" type="none" material="standard" color="white" width="0.125" laneChange="none" /></lane></right></laneSection><laneSection s="242.0"><left><lane id="1" type="driving" level="false"><width sOffset="0.0" a="3.5" b="0.0" c="0.0" d="0.0" /><roadMark sOffset="0.0" type="none" material="standard" color="white" width="0.125" laneChange="none" /></lane><lane id="2" type="sidewalk" level="false"><width sOffset="0.0" a="2.0" b="-0.2375" c="0.0" d="0.0" /><roadMark sOffset="0.0" type="none" material="standard" color="white" width="0.125" laneChange="none" /></lane></left><center><lane id="0" type="none" level="false"><roadMark sOffset="0.0" type="none" material="standard" color="white" width="0.125" laneChange="none" /></lane></center><right><lane id="-1" type="driving" level="false"><width sOffset="0.0" a="3.5" b="0.0" c="0.0" d="0.0" /><roadMark sOffset="0.0" type="none" material="standard" color="white" width="0.125" laneChange="none" /></lane><lane id="-2" type="sidewalk" level="false"><width sOffset="0.0" a="2.0" b="-0.2375" c="0.0" d="0.0" /><roadMark sOffset="0.0" type="none" material="standard" color="white" width="0.125" laneChange="none" /></lane></right></laneSection></lanes>
+  <signals><signal s="235.00" t="-4.50" id="101" name="tl_road_east" dynamic="yes" orientation="+" zOffset="5.0" country="OpenDRIVE" type="1000001" subtype="-1" value="-1" height="3.0" width="0.5"><validity fromLane="-1" toLane="-1" /></signal></signals></road>
+
+  
+  <road name="road_south" length="250.000000" id="2" junction="-1">
+    <link>
+      <successor elementType="junction" elementId="100" />
+    </link>
+    <planView>
+      <geometry s="0.0" x="-0.000000" y="-255.000000" hdg="1.5707963267948966" length="250.000000">
+        <line />
+      </geometry>
+    </planView>
+    <elevationProfile><elevation s="0.0" a="0.0" b="0.0" c="0.0" d="0.0" /></elevationProfile>
+    <lateralProfile />
+    <lanes>
+      <laneSection s="0.0"><left><lane id="1" type="driving" level="false"><width sOffset="0.0" a="3.5" b="0.0" c="0.0" d="0.0" /><roadMark sOffset="0.0" type="none" material="standard" color="white" width="0.125" laneChange="none" /></lane><lane id="2" type="sidewalk" level="false"><width sOffset="0.0" a="2.0" b="0.0" c="0.0" d="0.0" /><roadMark sOffset="0.0" type="none" material="standard" color="white" width="0.125" laneChange="none" /></lane></left><center><lane id="0" type="none" level="false"><roadMark sOffset="0.0" type="broken" material="standard" color="yellow" width="0.125" laneChange="none" /></lane></center><right><lane id="-1" type="driving" level="false"><width sOffset="0.0" a="3.5" b="0.0" c="0.0" d="0.0" /><roadMark sOffset="0.0" type="none" material="standard" color="white" width="0.125" laneChange="none" /></lane><lane id="-2" type="sidewalk" level="false"><width sOffset="0.0" a="2.0" b="0.0" c="0.0" d="0.0" /><roadMark sOffset="0.0" type="none" material="standard" color="white" width="0.125" laneChange="none" /></lane></right></laneSection><laneSection s="242.0"><left><lane id="1" type="driving" level="false"><width sOffset="0.0" a="3.5" b="0.0" c="0.0" d="0.0" /><roadMark sOffset="0.0" type="none" material="standard" color="white" width="0.125" laneChange="none" /></lane><lane id="2" type="sidewalk" level="false"><width sOffset="0.0" a="2.0" b="-0.2375" c="0.0" d="0.0" /><roadMark sOffset="0.0" type="none" material="standard" color="white" width="0.125" laneChange="none" /></lane></left><center><lane id="0" type="none" level="false"><roadMark sOffset="0.0" type="none" material="standard" color="white" width="0.125" laneChange="none" /></lane></center><right><lane id="-1" type="driving" level="false"><width sOffset="0.0" a="3.5" b="0.0" c="0.0" d="0.0" /><roadMark sOffset="0.0" type="none" material="standard" color="white" width="0.125" laneChange="none" /></lane><lane id="-2" type="sidewalk" level="false"><width sOffset="0.0" a="2.0" b="-0.2375" c="0.0" d="0.0" /><roadMark sOffset="0.0" type="none" material="standard" color="white" width="0.125" laneChange="none" /></lane></right></laneSection></lanes>
+  <signals><signal s="235.00" t="-4.50" id="201" name="tl_road_south" dynamic="yes" orientation="+" zOffset="5.0" country="OpenDRIVE" type="1000001" subtype="-1" value="-1" height="3.0" width="0.5"><validity fromLane="-1" toLane="-1" /></signal></signals></road>
+
+  
+  <road name="road_north" length="250.000000" id="3" junction="-1">
+    <link>
+      <successor elementType="junction" elementId="100" />
+    </link>
+    <planView>
+      <geometry s="0.0" x="-0.000000" y="255.000000" hdg="-1.5707963267948966" length="250.000000">
+        <line />
+      </geometry>
+    </planView>
+    <elevationProfile><elevation s="0.0" a="0.0" b="0.0" c="0.0" d="0.0" /></elevationProfile>
+    <lateralProfile />
+    <lanes>
+      <laneSection s="0.0"><left><lane id="1" type="driving" level="false"><width sOffset="0.0" a="3.5" b="0.0" c="0.0" d="0.0" /><roadMark sOffset="0.0" type="none" material="standard" color="white" width="0.125" laneChange="none" /></lane><lane id="2" type="sidewalk" level="false"><width sOffset="0.0" a="2.0" b="0.0" c="0.0" d="0.0" /><roadMark sOffset="0.0" type="none" material="standard" color="white" width="0.125" laneChange="none" /></lane></left><center><lane id="0" type="none" level="false"><roadMark sOffset="0.0" type="broken" material="standard" color="yellow" width="0.125" laneChange="none" /></lane></center><right><lane id="-1" type="driving" level="false"><width sOffset="0.0" a="3.5" b="0.0" c="0.0" d="0.0" /><roadMark sOffset="0.0" type="none" material="standard" color="white" width="0.125" laneChange="none" /></lane><lane id="-2" type="sidewalk" level="false"><width sOffset="0.0" a="2.0" b="0.0" c="0.0" d="0.0" /><roadMark sOffset="0.0" type="none" material="standard" color="white" width="0.125" laneChange="none" /></lane></right></laneSection><laneSection s="242.0"><left><lane id="1" type="driving" level="false"><width sOffset="0.0" a="3.5" b="0.0" c="0.0" d="0.0" /><roadMark sOffset="0.0" type="none" material="standard" color="white" width="0.125" laneChange="none" /></lane><lane id="2" type="sidewalk" level="false"><width sOffset="0.0" a="2.0" b="-0.2375" c="0.0" d="0.0" /><roadMark sOffset="0.0" type="none" material="standard" color="white" width="0.125" laneChange="none" /></lane></left><center><lane id="0" type="none" level="false"><roadMark sOffset="0.0" type="none" material="standard" color="white" width="0.125" laneChange="none" /></lane></center><right><lane id="-1" type="driving" level="false"><width sOffset="0.0" a="3.5" b="0.0" c="0.0" d="0.0" /><roadMark sOffset="0.0" type="none" material="standard" color="white" width="0.125" laneChange="none" /></lane><lane id="-2" type="sidewalk" level="false"><width sOffset="0.0" a="2.0" b="-0.2375" c="0.0" d="0.0" /><roadMark sOffset="0.0" type="none" material="standard" color="white" width="0.125" laneChange="none" /></lane></right></laneSection></lanes>
+  <signals><signal s="235.00" t="-4.50" id="301" name="tl_road_north" dynamic="yes" orientation="+" zOffset="5.0" country="OpenDRIVE" type="1000001" subtype="-1" value="-1" height="3.0" width="0.5"><validity fromLane="-1" toLane="-1" /></signal></signals></road>
+
+  
+  
+  
+  
+
+  
+
+  
+  <road name="conn_w_to_e" length="10.0" id="10" junction="100">
+    <link>
+      <predecessor elementType="road" elementId="0" contactPoint="end" />
+      <successor elementType="road" elementId="1" contactPoint="end" />
+    </link>
+    <planView>
+      <geometry s="0.0" x="-5.0" y="-1.75" hdg="0.0" length="10.0">
+        <line />
+      </geometry>
+    </planView>
+    <lanes>
+      <laneSection s="0.0">
+        <center><lane id="0" type="none" level="false" /></center>
+        <right>
+          <lane id="-1" type="driving" level="false">
+            <width sOffset="0.0" a="3.5" b="0.0" c="0.0" d="0.0" />
+            <link><predecessor id="-1" /><successor id="1" /></link>
+          </lane>
+        </right>
+      </laneSection>
+    </lanes>
+  </road>
+
+  
+  <road name="conn_e_to_w" length="10.0" id="11" junction="100">
+    <link>
+      <predecessor elementType="road" elementId="1" contactPoint="end" />
+      <successor elementType="road" elementId="0" contactPoint="end" />
+    </link>
+    <planView>
+      <geometry s="0.0" x="5.0" y="1.75" hdg="3.141592653589793" length="10.0">
+        <line />
+      </geometry>
+    </planView>
+    <lanes>
+      <laneSection s="0.0">
+        <center><lane id="0" type="none" level="false" /></center>
+        <right>
+          <lane id="-1" type="driving" level="false">
+            <width sOffset="0.0" a="3.5" b="0.0" c="0.0" d="0.0" />
+            <link><predecessor id="-1" /><successor id="1" /></link>
+          </lane>
+        </right>
+      </laneSection>
+    </lanes>
+  </road>
+
+  
+  <road name="conn_s_to_n" length="10.0" id="12" junction="100">
+    <link>
+      <predecessor elementType="road" elementId="2" contactPoint="end" />
+      <successor elementType="road" elementId="3" contactPoint="end" />
+    </link>
+    <planView>
+      <geometry s="0.0" x="1.75" y="-5.0" hdg="1.5707963267948966" length="10.0">
+        <line />
+      </geometry>
+    </planView>
+    <lanes>
+      <laneSection s="0.0">
+        <center><lane id="0" type="none" level="false" /></center>
+        <right>
+          <lane id="-1" type="driving" level="false">
+            <width sOffset="0.0" a="3.5" b="0.0" c="0.0" d="0.0" />
+            <link><predecessor id="-1" /><successor id="1" /></link>
+          </lane>
+        </right>
+      </laneSection>
+    </lanes>
+  </road>
+
+  
+  <road name="conn_n_to_s" length="10.0" id="13" junction="100">
+    <link>
+      <predecessor elementType="road" elementId="3" contactPoint="end" />
+      <successor elementType="road" elementId="2" contactPoint="end" />
+    </link>
+    <planView>
+      <geometry s="0.0" x="-1.75" y="5.0" hdg="-1.5707963267948966" length="10.0">
+        <line />
+      </geometry>
+    </planView>
+    <lanes>
+      <laneSection s="0.0">
+        <center><lane id="0" type="none" level="false" /></center>
+        <right>
+          <lane id="-1" type="driving" level="false">
+            <width sOffset="0.0" a="3.5" b="0.0" c="0.0" d="0.0" />
+            <link><predecessor id="-1" /><successor id="1" /></link>
+          </lane>
+        </right>
+      </laneSection>
+    </lanes>
+  </road>
+
+  
+
+  
+  <road name="conn_w_to_s" length="5.105" id="20" junction="100">
+    <link>
+      <predecessor elementType="road" elementId="0" contactPoint="end" />
+      <successor elementType="road" elementId="2" contactPoint="end" />
+    </link>
+    <planView>
+      <geometry s="0.0" x="-5.0" y="-1.75" hdg="0.0" length="5.105">
+        <arc curvature="-0.30769" />
+      </geometry>
+    </planView>
+    <lanes>
+      <laneSection s="0.0">
+        <center><lane id="0" type="none" level="false" /></center>
+        <right>
+          <lane id="-1" type="driving" level="false">
+            <width sOffset="0.0" a="2.5000" b="0.0" c="0.0" d="0.0" />
+            <link><predecessor id="-1" /><successor id="1" /></link>
+          </lane>
+        </right>
+      </laneSection>
+    </lanes>
+  </road>
+
+  
+  <road name="conn_e_to_n" length="5.105" id="21" junction="100">
+    <link>
+      <predecessor elementType="road" elementId="1" contactPoint="end" />
+      <successor elementType="road" elementId="3" contactPoint="end" />
+    </link>
+    <planView>
+      <geometry s="0.0" x="5.0" y="1.75" hdg="3.141592653589793" length="5.105">
+        <arc curvature="-0.30769" />
+      </geometry>
+    </planView>
+    <lanes>
+      <laneSection s="0.0">
+        <center><lane id="0" type="none" level="false" /></center>
+        <right>
+          <lane id="-1" type="driving" level="false">
+            <width sOffset="0.0" a="2.5000" b="0.0" c="0.0" d="0.0" />
+            <link><predecessor id="-1" /><successor id="1" /></link>
+          </lane>
+        </right>
+      </laneSection>
+    </lanes>
+  </road>
+
+  
+  <road name="conn_s_to_e" length="5.105" id="22" junction="100">
+    <link>
+      <predecessor elementType="road" elementId="2" contactPoint="end" />
+      <successor elementType="road" elementId="1" contactPoint="end" />
+    </link>
+    <planView>
+      <geometry s="0.0" x="1.75" y="-5.0" hdg="1.5707963267948966" length="5.105">
+        <arc curvature="-0.30769" />
+      </geometry>
+    </planView>
+    <lanes>
+      <laneSection s="0.0">
+        <center><lane id="0" type="none" level="false" /></center>
+        <right>
+          <lane id="-1" type="driving" level="false">
+            <width sOffset="0.0" a="2.5000" b="0.0" c="0.0" d="0.0" />
+            <link><predecessor id="-1" /><successor id="1" /></link>
+          </lane>
+        </right>
+      </laneSection>
+    </lanes>
+  </road>
+
+  
+  <road name="conn_n_to_w" length="5.105" id="23" junction="100">
+    <link>
+      <predecessor elementType="road" elementId="3" contactPoint="end" />
+      <successor elementType="road" elementId="0" contactPoint="end" />
+    </link>
+    <planView>
+      <geometry s="0.0" x="-1.75" y="5.0" hdg="-1.5707963267948966" length="5.105">
+        <arc curvature="-0.30769" />
+      </geometry>
+    </planView>
+    <lanes>
+      <laneSection s="0.0">
+        <center><lane id="0" type="none" level="false" /></center>
+        <right>
+          <lane id="-1" type="driving" level="false">
+            <width sOffset="0.0" a="2.5000" b="0.0" c="0.0" d="0.0" />
+            <link><predecessor id="-1" /><successor id="1" /></link>
+          </lane>
+        </right>
+      </laneSection>
+    </lanes>
+  </road>
+
+  
+
+  
+  <road name="conn_w_to_n" length="10.603" id="30" junction="100">
+    <link>
+      <predecessor elementType="road" elementId="0" contactPoint="end" />
+      <successor elementType="road" elementId="3" contactPoint="end" />
+    </link>
+    <planView>
+      <geometry s="0.0" x="-5.0" y="-1.75" hdg="0.0" length="10.603">
+        <arc curvature="0.14815" />
+      </geometry>
+    </planView>
+    <lanes>
+      <laneSection s="0.0">
+        <center><lane id="0" type="none" level="false" /></center>
+        <right>
+          <lane id="-1" type="driving" level="false">
+            <width sOffset="0.0" a="3.5" b="0.0" c="0.0" d="0.0" />
+            <link><predecessor id="-1" /><successor id="1" /></link>
+          </lane>
+        </right>
+      </laneSection>
+    </lanes>
+  </road>
+
+  
+  <road name="conn_e_to_s" length="10.603" id="31" junction="100">
+    <link>
+      <predecessor elementType="road" elementId="1" contactPoint="end" />
+      <successor elementType="road" elementId="2" contactPoint="end" />
+    </link>
+    <planView>
+      <geometry s="0.0" x="5.0" y="1.75" hdg="3.141592653589793" length="10.603">
+        <arc curvature="0.14815" />
+      </geometry>
+    </planView>
+    <lanes>
+      <laneSection s="0.0">
+        <center><lane id="0" type="none" level="false" /></center>
+        <right>
+          <lane id="-1" type="driving" level="false">
+            <width sOffset="0.0" a="3.5" b="0.0" c="0.0" d="0.0" />
+            <link><predecessor id="-1" /><successor id="1" /></link>
+          </lane>
+        </right>
+      </laneSection>
+    </lanes>
+  </road>
+
+  
+  <road name="conn_s_to_w" length="10.603" id="32" junction="100">
+    <link>
+      <predecessor elementType="road" elementId="2" contactPoint="end" />
+      <successor elementType="road" elementId="0" contactPoint="end" />
+    </link>
+    <planView>
+      <geometry s="0.0" x="1.75" y="-5.0" hdg="1.5707963267948966" length="10.603">
+        <arc curvature="0.14815" />
+      </geometry>
+    </planView>
+    <lanes>
+      <laneSection s="0.0">
+        <center><lane id="0" type="none" level="false" /></center>
+        <right>
+          <lane id="-1" type="driving" level="false">
+            <width sOffset="0.0" a="3.5" b="0.0" c="0.0" d="0.0" />
+            <link><predecessor id="-1" /><successor id="1" /></link>
+          </lane>
+        </right>
+      </laneSection>
+    </lanes>
+  </road>
+
+  
+  <road name="conn_n_to_e" length="10.603" id="33" junction="100">
+    <link>
+      <predecessor elementType="road" elementId="3" contactPoint="end" />
+      <successor elementType="road" elementId="1" contactPoint="end" />
+    </link>
+    <planView>
+      <geometry s="0.0" x="-1.75" y="5.0" hdg="-1.5707963267948966" length="10.603">
+        <arc curvature="0.14815" />
+      </geometry>
+    </planView>
+    <lanes>
+      <laneSection s="0.0">
+        <center><lane id="0" type="none" level="false" /></center>
+        <right>
+          <lane id="-1" type="driving" level="false">
+            <width sOffset="0.0" a="3.5" b="0.0" c="0.0" d="0.0" />
+            <link><predecessor id="-1" /><successor id="1" /></link>
+          </lane>
+        </right>
+      </laneSection>
+    </lanes>
+  </road>
+
+  
+  
+  
+
+  <junction name="intersection" id="100">
+    
+    <connection id="0" incomingRoad="0" connectingRoad="10" contactPoint="start">
+      <laneLink from="-1" to="-1" />
+    </connection>
+    <connection id="1" incomingRoad="1" connectingRoad="11" contactPoint="start">
+      <laneLink from="-1" to="-1" />
+    </connection>
+    <connection id="2" incomingRoad="2" connectingRoad="12" contactPoint="start">
+      <laneLink from="-1" to="-1" />
+    </connection>
+    <connection id="3" incomingRoad="3" connectingRoad="13" contactPoint="start">
+      <laneLink from="-1" to="-1" />
+    </connection>
+
+    
+    <connection id="4" incomingRoad="0" connectingRoad="20" contactPoint="start">
+      <laneLink from="-1" to="-1" />
+    </connection>
+    <connection id="5" incomingRoad="1" connectingRoad="21" contactPoint="start">
+      <laneLink from="-1" to="-1" />
+    </connection>
+    <connection id="6" incomingRoad="2" connectingRoad="22" contactPoint="start">
+      <laneLink from="-1" to="-1" />
+    </connection>
+    <connection id="7" incomingRoad="3" connectingRoad="23" contactPoint="start">
+      <laneLink from="-1" to="-1" />
+    </connection>
+
+    
+    <connection id="8" incomingRoad="0" connectingRoad="30" contactPoint="start">
+      <laneLink from="-1" to="-1" />
+    </connection>
+    <connection id="9" incomingRoad="1" connectingRoad="31" contactPoint="start">
+      <laneLink from="-1" to="-1" />
+    </connection>
+    <connection id="10" incomingRoad="2" connectingRoad="32" contactPoint="start">
+      <laneLink from="-1" to="-1" />
+    </connection>
+    <connection id="11" incomingRoad="3" connectingRoad="33" contactPoint="start">
+      <laneLink from="-1" to="-1" />
+    </connection>
+  </junction>
+
+<controller id="1" name="ctrl_ns" sequence="0"><control signalId="301" type="" /><control signalId="201" type="" /></controller><controller id="2" name="ctrl_ew" sequence="0"><control signalId="101" type="" /><control signalId="001" type="" /></controller></OpenDRIVE>

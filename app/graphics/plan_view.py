@@ -86,7 +86,7 @@ class PlanView(QGraphicsView):
     # drawing ---------------------------------------------------------------
     def refresh(self):
         self.scene.clear()
-        self._semaphores = []
+        self._semaphores_by_arm: dict = {}
         c = SCENE / 2
 
         # central junction
@@ -139,7 +139,7 @@ class PlanView(QGraphicsView):
             self.intersection.arms[key].signal_state = state
 
         sem = Semaphore(self.scene, x, y, r=r, state=arm.signal_state, on_click=on_click)
-        self._semaphores.append(sem)
+        self._semaphores_by_arm[key] = sem
 
     def _centerline(self, key, r):
         if key in ("N", "S"):
@@ -171,6 +171,19 @@ class PlanView(QGraphicsView):
         else:
             t.setPos(r.right() - br.width() - 6, r.center().y() - br.height() / 2)
         self.scene.addItem(t)
+
+    def update_semaphore_states(self, states: dict) -> None:
+        """Update semaphore colours from a phase dict without a full scene rebuild.
+
+        states: {"N": "green"|"yellow"|"red", "E": ..., "S": ..., "W": ...}
+        Called from the main thread via a queued Qt signal connection.
+        """
+        for key, state in states.items():
+            sem = self._semaphores_by_arm.get(key)
+            if sem is not None:
+                sem.set_state(state)
+            if key in self.intersection.arms:
+                self.intersection.arms[key].signal_state = state
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

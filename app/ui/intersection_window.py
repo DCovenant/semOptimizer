@@ -6,19 +6,28 @@ calibration tool. Saves/loads the whole template as intersection.json.
 """
 import os
 
+from PIL import Image
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import (QApplication, QCheckBox, QDockWidget, QFileDialog,
-                               QFormLayout, QLabel, QLineEdit, QMainWindow,
+from PySide6.QtWidgets import (QApplication, QCheckBox, QDialog, QDialogButtonBox,
+                               QDockWidget, QDoubleSpinBox, QFileDialog, QFormLayout,
+                               QFrame, QGridLayout, QLabel, QLineEdit, QMainWindow,
                                QMessageBox, QPushButton, QSpinBox, QToolBar,
                                QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
-from app.config import YOLO_MODEL
+from app.core.analysis_worker import AnalysisWorker
+from app.core.carla_worker import CarlaWorker
+from app.core.inference_service_manager import InferenceServiceManager
+from app.graphics.camera_panel import CameraGridWidget
+
+from app.config import SERVICE_MODEL, YOLO_MODEL
 from app.core.analysis import analyze_arm
 from app.core.detection import load_model
 from app.core.intersection import ARM_NAMES, ARMS, Intersection
 from app.graphics.plan_view import PlanView
 from app.ui.lane_window import LaneCalibrationWindow
+
+CAPTURES_DIR = "captures"
 
 
 class IntersectionWindow(QMainWindow):
@@ -32,11 +41,19 @@ class IntersectionWindow(QMainWindow):
         self.model = None
         self.results = {}
 
+        self._carla_worker: CarlaWorker | None = None
+        self._analysis_worker: AnalysisWorker | None = None
+        self._inference_mgr = InferenceServiceManager(model=SERVICE_MODEL)
+        self._captured_arms: set = set()   # arms whose reference frame was grabbed this connection
+        self._latest_frames: dict = {}     # arm -> latest live RGB frame (for analysis)
+
         self.plan = PlanView(self.intersection, self)
         self.setCentralWidget(self.plan)
         self._build_toolbar()
+        self._build_perception_dock()
         self._build_dock()
         self._build_results_dock()
+        self._build_camera_dock()
 
         if template_path and os.path.exists(template_path):
             self.load_template(template_path)
@@ -53,9 +70,19 @@ class IntersectionWindow(QMainWindow):
             a.triggered.connect(slot)
             tb.addAction(a)
         tb.addSeparator()
-        run = QAction("▶ Run YOLO (all arms)", self)
-        run.triggered.connect(self.on_run_all)
-        tb.addAction(run)
+        self._yolo_action = QAction("▶ Run YOLO (live)", self)
+        self._yolo_action.triggered.connect(self.on_toggle_yolo)
+        tb.addAction(self._yolo_action)
+
+        tb.addSeparator()
+        self._connect_action = QAction("⏵ Connect CARLA…", self)
+        self._connect_action.triggered.connect(self.on_connect_carla)
+        tb.addAction(self._connect_action)
+
+        self._disconnect_action = QAction("⏹ Disconnect", self)
+        self._disconnect_action.triggered.connect(self.on_disconnect_carla)
+        self._disconnect_action.setEnabled(False)
+        tb.addAction(self._disconnect_action)
 
     def _build_dock(self):
         panel = QWidget()
@@ -99,6 +126,69 @@ class IntersectionWindow(QMainWindow):
         dock.setWidget(panel)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
         self._selected = "N"
+
+    def _build_perception_dock(self):
+        """Left-side live readout of how many cars are perceived per arm.
+
+        Driven by AnalysisWorker results: `count` (vehicles detected in this
+        arm's lanes) and the EMA-smoothed `weighted_demand` that feeds the
+        timing logic. Populated by _update_perception on every analysis tick.
+        """
+        panel = QWidget()
+        lay = QVBoxLayout(panel)
+        title = QLabel("Perceived cars")
+        title.setStyleSheet("font-weight: bold; font-size: 14px;")
+        lay.addWidget(title)
+
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(8)
+        self._perc_count = {}
+        self._perc_demand = {}
+        for row, key in enumerate(ARMS):
+            card = QFrame()
+            card.setFrameShape(QFrame.Shape.StyledPanel)
+            cg = QGridLayout(card)
+            cg.setContentsMargins(8, 4, 8, 4)
+            name = QLabel(f"{ARM_NAMES[key]} ({key})")
+            name.setStyleSheet("font-weight: bold;")
+            cnt = QLabel("0")
+            cnt.setStyleSheet("font-size: 22px; font-weight: bold; color: #2ca02c;")
+            cnt.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            cars_lbl = QLabel("cars")
+            cars_lbl.setStyleSheet("color: #888;")
+            cars_lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
+            dem = QLabel("demand 0.0")
+            dem.setStyleSheet("color: #888;")
+            cg.addWidget(name, 0, 0)
+            cg.addWidget(cnt, 0, 1)
+            cg.addWidget(dem, 1, 0)
+            cg.addWidget(cars_lbl, 1, 1)
+            grid.addWidget(card, row, 0)
+            self._perc_count[key] = cnt
+            self._perc_demand[key] = dem
+        lay.addLayout(grid)
+        lay.addStretch(1)
+
+        dock = QDockWidget("Perception", self)
+        dock.setWidget(panel)
+        dock.setMinimumWidth(180)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
+
+    def _update_perception(self, results: dict):
+        """Refresh the per-arm perceived-car counts + demand from analysis."""
+        for key in ARMS:
+            res = results.get(key)
+            if res is None:
+                continue
+            self._perc_count[key].setText(str(res.get("count", 0)))
+            self._perc_demand[key].setText(
+                "demand %.1f" % res.get("weighted_demand", 0.0))
+
+    def _reset_perception(self):
+        for key in ARMS:
+            self._perc_count[key].setText("0")
+            self._perc_demand[key].setText("demand 0.0")
 
     def _build_results_dock(self):
         panel = QWidget()
@@ -246,6 +336,196 @@ class IntersectionWindow(QMainWindow):
         self._lane_windows.append(win)
         win.show()
 
+    # carla connection ------------------------------------------------------
+    def _build_camera_dock(self):
+        self._camera_panel = CameraGridWidget()
+        dock = QDockWidget("CARLA Cameras", self)
+        dock.setWidget(self._camera_panel)
+        dock.setMinimumHeight(300)
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, dock)
+
+    def on_connect_carla(self):
+        dlg = _CarlaConnectDialog(self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        if not dlg.map_file or not os.path.exists(dlg.map_file):
+            QMessageBox.warning(self, "No map file",
+                                "Choose a valid OpenDRIVE (.xodr) map file.")
+            return
+        worker = CarlaWorker(
+            host=dlg.host,
+            port=dlg.port,
+            map_file=dlg.map_file,
+            vehicles=dlg.vehicles,
+            demand_weights=_parse_demand(dlg.demand),
+            ns_green=dlg.ns_green,
+            ew_green=dlg.ew_green,
+        )
+        self._captured_arms = set()
+        self._latest_frames = {}
+        worker.frames_ready.connect(
+            self._camera_panel.update_frames,
+            Qt.ConnectionType.QueuedConnection)
+        worker.frames_ready.connect(
+            self._capture_reference_frames,
+            Qt.ConnectionType.QueuedConnection)
+        worker.frames_ready.connect(
+            self._cache_latest_frames,
+            Qt.ConnectionType.QueuedConnection)
+        worker.vehicle_counts.connect(
+            self._camera_panel.update_counts,
+            Qt.ConnectionType.QueuedConnection)
+        worker.phase_changed.connect(
+            self.plan.update_semaphore_states,
+            Qt.ConnectionType.QueuedConnection)
+        worker.status_message.connect(
+            self.statusBar().showMessage,
+            Qt.ConnectionType.QueuedConnection)
+        worker.error_occurred.connect(
+            lambda msg: QMessageBox.critical(self, "CARLA Error", msg),
+            Qt.ConnectionType.QueuedConnection)
+        worker.finished.connect(
+            self._on_carla_worker_finished,
+            Qt.ConnectionType.QueuedConnection)
+        self._carla_worker = worker
+        self._connect_action.setEnabled(False)
+        self._disconnect_action.setEnabled(True)
+        worker.start()
+
+    def _capture_reference_frames(self, frames: dict):
+        """Save the first live frame of each arm as its calibration reference.
+
+        Runs once per arm per connection. Overwrites the stored screenshot
+        (the static pole view is unchanged) but leaves any existing
+        calibration intact.
+        """
+        os.makedirs(CAPTURES_DIR, exist_ok=True)
+        for key, arr in frames.items():
+            if key in self._captured_arms or key not in self.intersection.arms:
+                continue
+            path = os.path.abspath(os.path.join(CAPTURES_DIR, f"{key}.png"))
+            try:
+                Image.fromarray(arr).save(path)
+            except Exception as e:
+                self.statusBar().showMessage(f"Could not save {key} frame: {e}")
+                continue
+            self._captured_arms.add(key)
+            arm = self.intersection.arms[key]
+            arm.image = path
+            if key == self._selected:
+                self.image_edit.setText(path)
+                self._refresh_status()
+        self.statusBar().showMessage(
+            f"Captured reference frames: {', '.join(sorted(self._captured_arms))}")
+
+    def _cache_latest_frames(self, frames: dict):
+        """Keep the most recent live frame per arm for the analysis worker."""
+        self._latest_frames.update(frames)
+
+    def get_latest_frames(self) -> dict:
+        """Thread-safe-enough snapshot of the latest frames for AnalysisWorker."""
+        return dict(self._latest_frames)
+
+    # live YOLO (continuous tracking) ---------------------------------------
+    def on_toggle_yolo(self):
+        if self._analysis_worker is not None:
+            self._stop_analysis()
+            return
+        if self._carla_worker is None:
+            QMessageBox.information(self, "Not connected",
+                                    "Connect to CARLA before running live YOLO.")
+            return
+        calibrations = {k: a.calibration for k, a in self.intersection.arms.items()
+                        if a.enabled and a.calibrated}
+        if not calibrations:
+            QMessageBox.information(self, "Nothing calibrated",
+                                    "Calibrate at least one arm's incoming lane first.")
+            return
+        ok, msg = self._inference_mgr.ensure_running()
+        self.statusBar().showMessage(msg)
+        if not ok:
+            QMessageBox.critical(self, "Inference service", msg)
+            return
+        worker = AnalysisWorker(self.get_latest_frames, calibrations,
+                                self._inference_mgr.socket_path)
+        worker.analysis_ready.connect(self._on_analysis,
+                                      Qt.ConnectionType.QueuedConnection)
+        worker.status_message.connect(self.statusBar().showMessage,
+                                      Qt.ConnectionType.QueuedConnection)
+        worker.error_occurred.connect(
+            lambda msg: QMessageBox.warning(self, "Analysis error", msg),
+            Qt.ConnectionType.QueuedConnection)
+        worker.finished.connect(self._on_analysis_finished,
+                                Qt.ConnectionType.QueuedConnection)
+        self._analysis_worker = worker
+        self._yolo_action.setText("⏹ Stop YOLO")
+        worker.start()
+
+    def _stop_analysis(self):
+        if self._analysis_worker is not None:
+            self._analysis_worker.stop()
+        self._yolo_action.setText("▶ Run YOLO (live)")
+
+    def _on_analysis_finished(self):
+        if self._analysis_worker is not None:
+            self._analysis_worker.deleteLater()
+            self._analysis_worker = None
+        self._yolo_action.setText("▶ Run YOLO (live)")
+        for key in ARMS:                 # drop stale overlays so they don't trail
+            self._camera_panel.set_overlay(key, [])
+        self._reset_perception()
+
+    def _on_analysis(self, results: dict):
+        """Per-arm tracked results → camera overlays + live weighted demand."""
+        for key, res in results.items():
+            self._camera_panel.set_overlay(key, res.get("tracks", []))
+        self._update_perception(results)
+        self._show_live_demand(results)
+
+    def _show_live_demand(self, results: dict):
+        self.results_tree.clear()
+        demand = {}
+        for key in ARMS:
+            res = results.get(key)
+            if res is None:
+                continue
+            top = QTreeWidgetItem([
+                f"{ARM_NAMES[key]} ({key})", "",
+                f"{res['count']} cars  ·  demand {res['weighted_demand']:.1f}"])
+            for ph, w in sorted(res["phase_demand"].items()):
+                top.addChild(QTreeWidgetItem([f"  {ph}", "", f"{w:.1f}"]))
+                demand[ph] = demand.get(ph, 0.0) + w
+            top.addChild(QTreeWidgetItem(["  ⌁ ignored/parked", "", str(res["ignored"])]))
+            self.results_tree.addTopLevelItem(top)
+        self.results_tree.expandAll()
+        txt = ", ".join(f"{p}: {w:.1f}" for p, w in sorted(demand.items())) or "—"
+        self.demand_overall.setText(f"live weighted demand → {txt}")
+
+    def on_disconnect_carla(self):
+        self._disconnect_action.setEnabled(False)
+        self._stop_analysis()
+        if self._carla_worker is not None:
+            self._carla_worker.stop()
+
+    def _on_carla_worker_finished(self):
+        if self._carla_worker is not None:
+            self._carla_worker.deleteLater()
+            self._carla_worker = None
+        self._camera_panel.clear()
+        self._connect_action.setEnabled(True)
+        self._disconnect_action.setEnabled(False)
+
+    def closeEvent(self, event):
+        # stop analysis first (it shuts its socket so recv unblocks), then CARLA.
+        if self._analysis_worker is not None:
+            self._analysis_worker.stop()
+            self._analysis_worker.wait(5000)
+        if self._carla_worker is not None:
+            self._carla_worker.stop()
+            self._carla_worker.wait(8000)   # sync-mode tick can be slow under load
+        self._inference_mgr.stop()
+        super().closeEvent(event)
+
     # template save / load --------------------------------------------------
     def _clear_results(self):
         self.results = {}
@@ -282,3 +562,107 @@ class IntersectionWindow(QMainWindow):
         self.template_path = path
         self.on_arm_selected("N")
         self.statusBar().showMessage(f"Loaded template from {path}")
+
+
+# ── helpers ────────────────────────────────────────────────────────────────────
+
+def _parse_demand(spec: str) -> dict:
+    """'N:3,S:3,E:1,W:1' → {"N": 3.0, ...}. Missing arms default to 1.0."""
+    weights = {"N": 1.0, "E": 1.0, "S": 1.0, "W": 1.0}
+    if spec:
+        for part in spec.split(","):
+            k, _, v = part.partition(":")
+            k = k.strip().upper()
+            if k in weights and v:
+                weights[k] = float(v)
+    return weights
+
+
+class _CarlaConnectDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Connect to CARLA")
+        self.setMinimumWidth(380)
+
+        form = QFormLayout()
+
+        self._host_edit = QLineEdit("localhost")
+        form.addRow("Host", self._host_edit)
+
+        self._port_spin = QSpinBox()
+        self._port_spin.setRange(1, 65535)
+        self._port_spin.setValue(2000)
+        form.addRow("Port", self._port_spin)
+
+        self._map_edit = QLineEdit()
+        _default_map = os.path.join(os.getcwd(), "maps", "loop_intersection.xodr")
+        if os.path.exists(_default_map):
+            self._map_edit.setText(_default_map)
+        browse = QPushButton("Browse…")
+        browse.clicked.connect(self._browse_map)
+        form.addRow("Map file (.xodr)", self._map_edit)
+        form.addRow("", browse)
+
+        self._vehicles_spin = QSpinBox()
+        self._vehicles_spin.setRange(1, 200)
+        self._vehicles_spin.setValue(15)
+        form.addRow("Vehicles", self._vehicles_spin)
+
+        self._demand_edit = QLineEdit("N:1,E:1,S:1,W:1")
+        form.addRow("Demand (arm:weight)", self._demand_edit)
+
+        self._ns_spin = QDoubleSpinBox()
+        self._ns_spin.setRange(10.0, 300.0)
+        self._ns_spin.setValue(30.0)
+        self._ns_spin.setSuffix(" s")
+        form.addRow("N/S green time", self._ns_spin)
+
+        self._ew_spin = QDoubleSpinBox()
+        self._ew_spin.setRange(10.0, 300.0)
+        self._ew_spin.setValue(30.0)
+        self._ew_spin.setSuffix(" s")
+        form.addRow("E/W green time", self._ew_spin)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(buttons)
+
+    def _browse_map(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select OpenDRIVE map", "", "OpenDRIVE (*.xodr)")
+        if path:
+            self._map_edit.setText(path)
+
+    @property
+    def host(self) -> str:
+        return self._host_edit.text().strip() or "localhost"
+
+    @property
+    def port(self) -> int:
+        return self._port_spin.value()
+
+    @property
+    def map_file(self) -> str:
+        return self._map_edit.text().strip()
+
+    @property
+    def vehicles(self) -> int:
+        return self._vehicles_spin.value()
+
+    @property
+    def demand(self) -> str:
+        return self._demand_edit.text().strip()
+
+    @property
+    def ns_green(self) -> float:
+        return self._ns_spin.value()
+
+    @property
+    def ew_green(self) -> float:
+        return self._ew_spin.value()
