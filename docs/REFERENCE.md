@@ -83,12 +83,10 @@ Python environments**, on purpose:
 
 | Process            | Venv          | Python | Why                                                        |
 |--------------------|---------------|--------|------------------------------------------------------------|
-| Desktop app + CARLA| `.venv312`*   | 3.7    | The official CARLA `.egg` pins us to **Python 3.7**.       |
+| Desktop app + CARLA| `.venv`       | 3.7    | The official CARLA `.egg` pins us to **Python 3.7**.       |
 | Inference service  | `.venv-infer` | 3.12   | ROCm PyTorch needs **3.10+**; can't share the 3.7 venv.    |
-| (standalone tools) | `.venv`       | varies | misc / notebooks                                           |
 
-\* The app is launched with `.venv312/bin/python -m app.main` (the directory name
-is historical; it carries the 3.7 interpreter the egg requires).
+The app is launched with `.venv/bin/python app/main.py`.
 
 Consequences that explain a lot of the code:
 
@@ -252,7 +250,13 @@ inference service (no torch here). Per pass: crop each new frame to its lane ROI
 batch all arms into one socket round-trip, offset boxes back, `analyze_tracks`,
 then `_smooth_demand` (EMA) + `_stabilize_count` (median). **Frame dedup**: skips
 arms whose frame object is unchanged since last pass (sync mode emits frames slower
-than this loop runs). Calibrations/ROIs are snapshotted at construction — recalibrating means restarting the worker (the Run-YOLO toggle does this).
+than this loop runs). Calibrations/ROIs are snapshotted at construction —
+recalibrating means restarting the worker (the Run-YOLO toggle does this).
+**Inference sizing:** `_imgsz_for(crop, cap=CROP_MAX_SIDE)` rounds the crop's long
+side up to the nearest 32-multiple but never above the cap — small ROIs run at
+native resolution (no upscale inflation), and large ROIs are pre-decimated before
+the socket send so the GPU tensor never exceeds `CROP_MAX_SIDE` (640 by default;
+`SEM_CROP_MAX_SIDE=960` for accuracy-first runs — see the config table in §8).
 
 **`app/core/inference_service_manager.py`** — `InferenceServiceManager`. Finds
 `.venv-infer/bin/python`, launches `inference/service.py` as a subprocess bound to
@@ -268,7 +272,10 @@ crop (**not** a torch batch — a single ~960px inference already saturates the 
 and ultralytics' batch path letterboxes to squares, ~2× slower). **Per-frame only,
 no tracking** — at the achievable frame rate ByteTrack mis-followed fast cars, so
 we detect each frame and smooth the *aggregate demand* instead. Run with
-`--socket --model --device {auto,cuda,cpu}`.
+`--socket --model --device {auto,cuda,cpu}`. Sets `PYTORCH_HIP_ALLOC_CONF`
+(garbage-collect at 70 %, 128 MB max split) before torch loads, so the ROCm
+caching allocator returns freed blocks instead of hoarding GTT — an explicit
+env var from the launcher still wins (`setdefault`).
 
 **`inference/protocol.py`** — the wire protocol (§7). `send_message`/`recv_message`
 frame `[4-byte len][JSON header][raw payload]`. Pure-Python, 3.7-safe by mandate.
@@ -320,34 +327,34 @@ an editable polygon with draggable vertex handles, and the canvas that hosts the
   (classified by position relative to the centre).
 - `_cameras_from_lights` — camera transforms at each signal pole, looking *outward
   toward the queue* (this is what `lane_distance.py` assumes).
-- `DemandManager` — keeps a fixed vehicle count recirculating: spawns on inbound
-  lanes weighted per-arm, lets Traffic Manager drive, recycles cars that reach an
-  arm tip. `detect_inbound()` is the **ground-truth** per-arm count (lane −1 only).
+- `DemandManager` — keeps a fixed vehicle count recirculating: pool-based (teleport
+  only, no mid-run spawn/destroy). `prefill()` pre-spawns all target vehicles
+  underground at startup; `fill()` releases pooled vehicles onto inbound lanes
+  (weighted per-arm demand) by teleport; `tick()` recycles cars that reach the
+  outbound arm tip back underground. `_spawn_one()` fires only as a recovery path
+  when CARLA unexpectedly destroys an actor (logged to stdout). `detect_inbound()`
+  is the **ground-truth** per-arm count (lane −1 only).
 - `PedestrianManager` — random walker arrivals on the sidewalk that wait, cross on
-  cue (`set_walk_allowed`, driven by the `PED_CROSS` phase), and despawn on arrival.
-  Crosswalk geometry is derived from the light positions like `_cameras_from_lights`.
-  `waiting_counts()` is the ground-truth per-arm waiting tally. See §6.
-  Lifecycle guards (long runs must not degrade): release is **rising-edge only**
-  (walkers arriving mid-window wait for the next one, so nobody is released into a
-  closing window and stranded mid-road); a walker crossing longer than
-  `PED_CROSS_TIMEOUT` (30 s — stuck or run over; a dead walker still reports
-  `is_alive`) is recycled; a walker waiting longer than `PED_WAIT_GIVEUP` (90 s,
-  e.g. fixed mode never serves) gives up and leaves. Without these, stuck
-  walkers saturate `PED_MAX_ACTIVE` forever — per-tick RPCs, corpses TM traffic
-  brakes for, and no new arrivals. `tick(dt)` needs the sim-step for the ages.
-  **Walker pool:** walkers are *never destroyed mid-run* — repeated walker
-  spawn/destroy cycles leak memory inside the CARLA **server** (UE4 never fully
-  releases the skeletal meshes), making the server progressively slower and
-  prone to hanging on shutdown. Finished walkers are parked under the map
-  (physics off, `_PED_PARK_Z`) and teleported back to a kerb for later
-  arrivals; `destroy_all()` (teardown) is the only real destroy, and it sweeps
-  every `walker.*` actor in the world, not just the tracked ones.
-  **Sync-mode spawn grace:** a freshly spawned actor reports `is_alive=False`
-  until the next `world.tick()` snapshot reaches the client. The worker spawns
-  and ticks the manager in the same loop iteration, so `tick(dt)` only treats
-  `is_alive=False` as "gone" after a 1 s grace — without it every walker was
-  dropped from tracking on its spawn tick and stood at the kerb forever as an
-  untracked orphan (detected by YOLO → crossings granted that nobody used).
+  cue (`set_walk_allowed`, driven by the `PED_CROSS` phase), and return to the pool
+  on arrival. Crosswalk geometry is derived from the light positions like
+  `_cameras_from_lights`. `waiting_counts()` is the ground-truth per-arm waiting tally.
+  See §6.
+  **Walker pool:** walkers are *never destroyed mid-run*. `prefill()` pre-spawns
+  `PED_MAX_ACTIVE` walkers underground at startup (same rationale as vehicles: UE4
+  never fully releases skeletal meshes). `_park()` hides finished walkers under the
+  map (`_PED_PARK_Z`); `maybe_spawn()` teleports a pooled walker to the kerb.
+  `destroy_all()` (teardown only) sweeps every `walker.*` actor in the world.
+  **Spawn placement:** `maybe_spawn()` shuffles arms and tries each kerb endpoint;
+  `_ped_clear()` rejects a spot if another walker is within `_PED_SPAWN_CLEAR` (1.8 m).
+  A random offset of ±`_PED_CROSS_SPREAD` (0.7 m) along the arm axis is applied to
+  both the start *and* target of every walker so concurrent crossers take parallel
+  paths rather than converging on the same point (which causes physics blocking).
+  **Lifecycle guards:** release is rising-edge only (walkers arriving mid-window wait
+  for the next one); `PED_CROSS_TIMEOUT` (30 s) recycles stuck/run-over walkers;
+  `PED_WAIT_GIVEUP` (90 s) releases unserved waiters in fixed mode. `tick(dt)` uses
+  the sim-step for the ages.
+  **Sync-mode spawn grace:** a freshly spawned actor reports `is_alive=False` until
+  the next `world.tick()` snapshot; `tick(dt)` only treats it as gone after 1 s.
 
 ---
 
@@ -411,11 +418,18 @@ start, so toggling adaptive off cleanly restores the dialog's fixed timing.
 ### What the panel shows
 
 `timing_changed` is emitted at each green-phase start with
-`{mode, ns_green, ew_green, ns_count, ew_count, decision}`; `_update_signal_logic`
-renders the badge, the per-axis `cars → green` table, the proportional split bar,
-and the verdict (`balanced — held` / `favouring N–S` / `favouring E–W`). On toggle
-the badge flips immediately and the verdict shows `applies next green…` because the
-seconds can only legally change at the next green start.
+`{mode, ns_green, ew_green, ns_count, ew_count, decision, ped_count}`;
+`_update_signal_logic` renders:
+- **ADAPTIVE / FIXED** badge
+- Three-row table: N–S and E–W count → green seconds; **People** row showing the
+  perceived pedestrian waiting count → `phase` (purple, `_PED_CROSS` will be
+  inserted this cycle) or `—`
+- Proportional NS / EW split bar (blue / orange)
+- Verdict: `balanced — held` / `favouring N–S` / `favouring E–W`, with
+  `· ped phase` appended when `ped_count > 0`
+
+On toggle the badge flips immediately and the verdict shows `applies next green…`
+because the green seconds can only legally change at the next green start.
 
 ### Pedestrian crossing — the "ponder"
 
@@ -522,7 +536,8 @@ One message = `[4-byte big-endian header length][UTF-8 JSON header][raw payload]
 | `CAPTURE_W/H`       | `1920×1080`        | camera render resolution (calibration is in these px)                            |
 | `SENSOR_TICK`       | `0.1` s            | min sim-seconds between camera captures (10 Hz)                                   |
 | `SIM_FIXED_DELTA`   | `0.05` s           | fixed sync-mode physics step (20 Hz)                                              |
-| `INFER_IMGSZ`       | `1280`             | YOLO inference long-side; **scale with `CAPTURE_*`** or distant recall is lost   |
+| `INFER_IMGSZ`       | `1280`             | baseline YOLO inference long-side (used by the in-process static path)           |
+| `CROP_MAX_SIDE`     | `640` (env `SEM_CROP_MAX_SIDE`) | hard cap for live lane-crop inference; never upscaled past this. 640 leaves RAM headroom for screen recording; `SEM_CROP_MAX_SIDE=960` for accuracy-first runs |
 | `DEFAULT_PHASE`     | `approach_A`       | phase tag for lanes that don't specify one                                       |
 
 **`carla_intersection.py` constants:** `ARM_ROAD_ID={W:0,E:1,S:2,N:3}`,
@@ -561,25 +576,30 @@ One message = `[4-byte big-endian header length][UTF-8 JSON header][raw payload]
 
 ## 10. Running it
 
+See [`README.md — Running`](README.md#running) for the full launch guide including
+the `systemd-run` memory-capped CARLA invocation, flag explanations, and ROCm
+inference setup. Short form:
+
 ```bash
-# 1. start CARLA
-./carla/CarlaUE4.sh -vulkan
+# Terminal 1 — CARLA in a 8 GB memory scope, headless, medium quality
+# (use -quality-level=Low when screen-recording — see README "Memory budget")
+systemd-run --user --scope -p MemoryMax=8G \
+    ./carla/CarlaUE4.sh -quality-level=Medium -nosound -RenderOffScreen
 
-# 2. (once) create the inference venv if missing
-python3.12 -m venv .venv-infer
-.venv-infer/bin/pip install torch torchvision \
-    --index-url https://download.pytorch.org/whl/rocm6.4
-.venv-infer/bin/pip install ultralytics lapx
-
-# 3. launch the app (3.7 + CARLA egg)
-.venv312/bin/python -m app.main intersection.json
+# Terminal 2 — app (Python 3.7 + CARLA egg)
+# (SEM_CROP_MAX_SIDE=960 prefix for accuracy-first runs; default is 640)
+.venv/bin/python app/main.py
 ```
 
 Then: **Connect CARLA…** → calibrate each arm's incoming lane → **▶ Run YOLO
 (live)** → **🧠 Adaptive signals**. Watch the per-arm counts (left dock) and the
-Signal-logic panel: greens shift toward the busier axis, and a strong lean
-force-offs the current green early. Toggle the button off to fall back to fixed
-timing.
+Signal-logic panel: greens shift toward the busier axis, a strong lean force-offs
+the current green early, and the People row lights up purple when a pedestrian
+crossing phase is triggered. Toggle the button off to fall back to fixed timing.
+
+If something misbehaves (stream-ID error spam, desktop freeze, recovery-spawn
+lines), see the troubleshooting table in
+[`README.md — Troubleshooting`](README.md#troubleshooting).
 
 ---
 

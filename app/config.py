@@ -1,4 +1,6 @@
 """Configuration constants for the lane-assignment app."""
+import os
+
 from PySide6.QtGui import QColor
 
 # ── detection ────────────────────────────────────────────────────────────────
@@ -86,7 +88,10 @@ INFER_IMGSZ = 1280
 # on 2026-06-11 — MemoryMax can't see those pages. Crops are inferred at their
 # real size (never upscaled) and never above this; crops more than twice this
 # wide are decimated before shipping so the socket payload shrinks too.
-CROP_MAX_SIDE = 960
+# GPU tensor memory grows with the SQUARE of this side, so 640 needs ~2.2× less
+# than 960. Default 640 leaves headroom for screen recording on the 16 GB box;
+# export SEM_CROP_MAX_SIDE=960 for accuracy-first runs with nothing else open.
+CROP_MAX_SIDE = int(os.environ.get("SEM_CROP_MAX_SIDE", "640"))
 
 # The pedestrian (crossing) crop is shipped and inferred SEPARATELY from the
 # lane crop: the crossing zone sits on the far sidewalk, so one bbox around

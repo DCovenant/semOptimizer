@@ -26,6 +26,15 @@ import socket
 import sys
 import time
 
+# Must be set before torch is first imported (ultralytics pulls it in). Keeps
+# the ROCm caching allocator from hoarding freed blocks: those live partly in
+# GTT (shmem carved from system RAM, invisible to RSS/MemoryMax) and on the
+# 16 GB box that hoard is what swap-thrashed the desktop during recording.
+# setdefault → an explicit env var from the launcher still wins.
+os.environ.setdefault(
+    "PYTORCH_HIP_ALLOC_CONF",
+    "garbage_collection_threshold:0.7,max_split_size_mb:128")
+
 import numpy as np
 
 # protocol.py sits beside this file; make it importable when run as a script.

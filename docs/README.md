@@ -1,483 +1,305 @@
-# Smart Traffic Signal Optimizer
+# SemOptimizer
 
-A computer vision-based traffic signal optimization system. Uses **4 cameras** — one mounted on each traffic light at a 4-way intersection — to independently detect vehicle queues per approach and collectively decide, in real time, whether the signal cycle should be adjusted.
+A computer vision system that watches all four approaches of a signalised intersection through pole-mounted cameras and continuously adapts the signal cycle to actual traffic demand — giving more green time to the busier axis, inserting pedestrian crossings when people are waiting, and cutting short a green that is serving nobody.
 
-> 📖 **For how the code actually works today** — architecture, threading/data flow, every module, the signal-timing logic, design decisions, data formats and config — see **[REFERENCE.md](REFERENCE.md)**. This README covers the vision, the model-compression pipeline, and the dataset-generation ideas (some of it aspirational/roadmap).
+Validated end-to-end inside a CARLA simulation. Designed from the ground up for eventual deployment on an edge device (microcomputer + tiny distilled model) at a real intersection.
 
-## The Problem
+---
 
-At many intersections, traffic signals operate on fixed cycles. This leads to situations where one side has 10+ cars stopped at a red light while the green side is completely empty — unnecessary congestion.
+## The problem
 
-## The Solution
+Most intersections run fixed cycles programmed decades ago for average demand. The result is predictable: the N–S axis sits on red while the E–W light goes green for an empty road, every cycle, for hours.
 
-Each traffic light pole at the intersection is equipped with a camera facing its incoming lane. Each camera independently runs vehicle detection and reports the queue size for its direction. The **4 outputs are fused** into a single decision that controls the signal cycle.
+Adaptive control exists in expensive proprietary systems. This project builds an open, camera-only alternative that needs no loop detectors or infrastructure beyond the cameras already bolted to signal poles.
 
-![Intersection layout](docs/images/main_road_idea.png)
+---
+
+## How it works
+
+Four cameras — one per traffic light pole — each face their own inbound lane. Each frame is processed by a YOLO detector that counts vehicles and pedestrians per approach. Those counts feed an adaptive controller that reallocates green time proportionally, penalises the lopsided axis, and inserts a pedestrian crossing phase when people have been waiting.
+
+```
+ ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
+ │  CAM  N  │  │  CAM  S  │  │  CAM  E  │  │  CAM  W  │
+ │  YOLO    │  │  YOLO    │  │  YOLO    │  │  YOLO    │
+ │  count   │  │  count   │  │  count   │  │  count   │
+ └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘
+      └──────────────┴──────┬──────┴──────────────┘
+                             │
+                   ┌─────────▼──────────┐
+                   │  PhaseController   │
+                   │                    │
+                   │  N:5  S:3  E:1  W:0│
+                   │  NS=8,  EW=1       │
+                   │  → NS gets 48 s    │
+                   │  → EW gets 12 s    │
+                   └─────────┬──────────┘
+                             │
+                   ┌─────────▼──────────┐
+                   │  CARLA traffic     │
+                   │  lights / real     │
+                   │  signal hardware   │
+                   └────────────────────┘
+```
+
+### Signal logic in brief
+
+The controller runs a two-phase cycle (NS green → NS yellow → all-red → EW green → …). At the start of each green phase it re-splits the total green budget proportionally to the current car counts, clamped to a minimum (10 s — safety) and maximum (60 s — starvation guard). A running force-off mechanism also cuts short the current green mid-phase if the waiting axis has outgrown the running one by more than the deadband (1 car), once the minimum has been served.
+
+Pedestrians are served in an exclusive all-red phase inserted at the cheapest moment (the natural all-red clearance between phases). The controller grants it opportunistically — when traffic is light, one axis is empty, or pedestrians have waited too long — so it costs minimal throughput.
+
+See [`REFERENCE.md §6`](REFERENCE.md#6-signal-timing-logic-the-heart) for the full policy.
+
+---
 
 ## Architecture
 
-### Multi-camera setup
+### Three-process split
 
-The intersection has 4 approaches (North, South, East, West). Each approach has a traffic light with a camera mounted on top, facing the incoming traffic:
+The system runs across three Python environments, intentionally:
 
-```
-                    ▲ North approach
-                    │
-            ┌───────┤
-            │  [CAM] │ ← Camera on North semaphore
-            │       │       (faces North, sees incoming cars)
-  ──────────┘       └──────────
-  West approach                 East approach
-  ──────────┐       ┌──────────
-  [CAM] →   │       │   ← [CAM]
-            │       │
-            │ [CAM] │
-            └───┤───┘
-                │
-                ▼ South approach
-```
+| Process | Python | Why |
+|---|---|---|
+| App + CARLA (`app/`) | 3.7 | The official CARLA `.egg` pins to Python 3.7 |
+| Inference service (`inference/`) | 3.12 | ROCm PyTorch requires 3.10+; can't share the 3.7 env |
+| Tools / notebooks | varies | |
 
-Each camera sees **only its own lane** — the vehicles waiting or approaching from that direction. This is more realistic than a single overhead camera because:
-- Cameras mount directly on existing traffic light poles (no special infrastructure)
-- Each camera has a clear, unobstructed view of its lane
-- The system is modular — a single camera failure doesn't blind the whole intersection
+Detection is out-of-process behind a Unix socket. The app (3.7) is a thin client; all YOLO/torch lives in `inference/service.py` (3.12). If the GPU wedges, it crashes the inference process, not the CARLA session.
 
-### Decision pipeline
+### Runtime data flow
 
 ```
-┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
-│ CAM North│  │ CAM South│  │ CAM East │  │ CAM West │
-│  YOLOv8n │  │  YOLOv8n │  │  YOLOv8n │  │  YOLOv8n │
-│  → count │  │  → count │  │  → count │  │  → count │
-└────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘
-     │              │              │              │
-     └──────────────┴──────┬───────┴──────────────┘
-                           │
-                           ▼
-                ┌─────────────────────┐
-                │   FUSION / DECISION │
-                │                     │
-                │  N:8  S:2  E:0  W:1 │
-                │                     │
-                │  → N/S axis: GREEN  │
-                │  → E/W axis: RED    │
-                └─────────────────────┘
+  Main thread (Qt)
+  IntersectionWindow
+  ├── CarlaWorker (QThread)
+  │    • owns CARLA world + synchronous tick
+  │    • 4 pole cameras → frames
+  │    • DemandManager  (vehicle pool, teleport-based recycling)
+  │    • PedestrianManager (walker pool, crosswalk lifecycle)
+  │    • PhaseController  (signal timing)
+  │    signals → frames_ready, phase_changed, timing_changed
+  │
+  └── AnalysisWorker (QThread)
+       • crops lane ROI from each frame
+       • sends crops to inference/service.py over Unix socket ──► GPU (ROCm)
+       • maps detections back to full-frame coords
+       • stabilises car count (median, 7-frame window)
+       • smooths demand (EMA)
+       • pushes counts → CarlaWorker → PhaseController
 ```
 
-### Recalibration
+### Vehicle and pedestrian pools
 
-Each camera should be recalibrated when:
-- The camera is moved or repositioned
-- Road construction changes the layout
-- Conditions change drastically (snow covering lane markings)
+All actors are pre-spawned underground at startup (`prefill()`) and only ever teleported to road positions — never spawned or destroyed mid-run. This eliminates the UE4 memory leak from repeated spawn/destroy churn. Vehicles recirculate: inbound spawn → drive through → outbound tip → park underground → release to road again. Walkers: kerb → wait → cross on green → park underground → return to next kerb.
 
-Recalibration can be scheduled to run periodically (e.g., once per day at night) as a safety net.
-
-## Tech Stack
-
-| Component | Technology | Size | Speed (CPU) |
-|---|---|---|---|
-| Road segmentation | SegFormer-B0 (Cityscapes) | ~14MB | ~2-5s per image |
-| Vehicle detection | YOLOv8n (COCO) | ~6MB | ~100-500ms per frame |
-| Image processing | OpenCV | - | - |
-| Optimized inference | ONNX Runtime | - | 2-3x faster than PyTorch |
-
-## Project Structure
+### Project structure
 
 ```
 semOptimizer/
-├── README.md
-├── docs/
-│   └── images/
-│       └── main_road_idea.png     # intersection layout diagram
-├── config/
-│   └── intersection_config.json   # camera positions + signal mapping
-├── notebooks/
-│   ├── road_edge_detection.ipynb  # experiment with road segmentation
-│   └── traffic_signal_optimizer.ipynb  # experiment with vehicle detection
-├── src/
-│   ├── camera_detector.py        # per-camera YOLO detection + vehicle count
-│   ├── signal_decision.py        # fuses 4 camera outputs → signal decision
-│   └── visualize.py              # visualization and debug functions
-├── carla_intersection.py          # CARLA simulation: 4-camera data generation
-├── models/
-│   └── yolov8n.onnx              # YOLO exported to ONNX
-└── tests/
-    └── test_with_sample_images/
+├── app/
+│   ├── main.py                    # entry point; fixes CARLA env then re-execs
+│   ├── config.py                  # all tunables (detection, timing, geometry)
+│   ├── core/
+│   │   ├── carla_worker.py        # QThread: CARLA world + PhaseController
+│   │   ├── analysis_worker.py     # QThread: perception pipeline client
+│   │   ├── analysis.py            # detection → lane assignment → demand math
+│   │   ├── calibration.py         # lane calibration JSON read/write
+│   │   ├── intersection.py        # Intersection/Arm data model
+│   │   ├── lane_distance.py       # normalised stop-line distance
+│   │   └── inference_service_manager.py
+│   ├── graphics/                  # plan view, camera tiles, lane editor
+│   └── ui/
+│       ├── intersection_window.py # main window, wires everything
+│       └── lane_window.py         # per-camera lane calibration tool
+├── inference/
+│   ├── service.py                 # out-of-process YOLO server (3.12 + ROCm)
+│   └── protocol.py                # Unix-socket wire protocol (3.7-safe)
+├── carla_intersection.py          # CARLA library: map, cameras, traffic, PhaseController
+├── maps/                          # OpenDRIVE (.xodr) maps
+├── models/                        # YOLO weights
+├── captures/                      # per-arm reference frames (N/E/S/W.png)
+├── tools/                         # memwatch.sh, etc.
+└── docs/
+    ├── README.md                  # this file
+    └── REFERENCE.md               # full technical reference
 ```
 
-## intersection_config.json
+---
 
-```json
-{
-  "cameras": {
-    "north": {"position": "north_semaphore", "faces": "north_incoming"},
-    "south": {"position": "south_semaphore", "faces": "south_incoming"},
-    "east":  {"position": "east_semaphore",  "faces": "east_incoming"},
-    "west":  {"position": "west_semaphore",  "faces": "west_incoming"}
-  },
-  "signal_groups": {
-    "ns_axis": ["north", "south"],
-    "ew_axis": ["east", "west"]
-  },
-  "calibration_date": "2026-05-23"
-}
+## System requirements
+
+**Developed and tested on:**
+
+| Component | Spec |
+|---|---|
+| CPU | AMD Ryzen 5 7500F |
+| GPU | AMD RX 9060 XT 16 GB (gfx1200) |
+| RAM | 16 GB DDR5 |
+| Motherboard | Gigabyte B650 EAGLE AX |
+| GPU compute | ROCm 6.4 |
+
+- **CARLA 0.9.15** with the official `.egg` (not the pip wheel)
+- **Python 3.7** for the app and CARLA integration (venv at `.venv/`)
+- **Python 3.12** for the inference service (venv at `.venv-infer/`)
+- **ROCm 6.4** for AMD GPU inference; CUDA also works; CPU fallback is available but slow (~10× slower per frame)
+
+---
+
+## Running
+
+### First-time setup
+
+Create the inference venv (Python 3.12 + ROCm PyTorch):
+
+```bash
+python3.12 -m venv .venv-infer
+.venv-infer/bin/pip install torch torchvision \
+    --index-url https://download.pytorch.org/whl/rocm6.4
+.venv-infer/bin/pip install ultralytics lapx
 ```
 
-## Decision Logic
+### Every session
 
-Each camera produces a vehicle count for its approach. The decision fuses all 4 counts (v1):
+**Step 1 — Launch CARLA inside a memory-capped systemd scope.**
 
-```
-ns_demand = count_north + count_south
-ew_demand = count_east  + count_west
-```
+CARLA + Unreal Engine 4 loads all map assets into system RAM regardless of VRAM. On 16 GB this leaves almost no headroom once Python and the UI are also running. The `systemd-run` wrapper confines CARLA to 8 GB and prevents it from swapping the whole machine to death:
 
-- If current green axis has 0 vehicles and red axis has vehicles → **switch immediately**
-- If `red_demand - green_demand >= threshold` → **suggest switch**
-- Otherwise → **keep current cycle**
-
-Example: N=8, S=2, E=0, W=1 → `ns_demand=10`, `ew_demand=1` → N/S axis gets green.
-
-Future improvements:
-- **Temporal smoothing** — require N consecutive frames to agree before switching
-- **Tracking** — use `model.track()` to distinguish stopped vs moving vehicles
-- **Minimum green time** — never switch before X seconds (safety)
-- **Priority** — give more weight to buses/emergency vehicles
-- **RL** — replace fixed rules with reinforcement learning trained on SynTraC
-- **Per-camera failure handling** — degrade gracefully if one camera goes down
-
-## Useful Datasets
-
-- **SynTraC** — synthetic dataset (CARLA) for traffic signal control with RL, 86K+ images
-- **UA-DETRAC** — 140K real traffic frames with 1.21M bounding boxes
-- **Cityscapes** — urban segmentation (what trained SegFormer)
-- **BDD100K** — 100K driving videos with segmentation
-
-## Synthetic Data Generation (CARLA + Augmentations)
-
-The models (YOLOv8, SegFormer) come pre-trained, but to validate and fine-tune on intersection scenarios, we can generate unlimited synthetic data with the CARLA simulator.
-
-### Weather conditions in CARLA
-
-CARLA exposes independent parameters via the Python API, allowing varied scenario creation:
-
-```python
-import carla
-
-weather = carla.WeatherParameters(
-    cloudiness=90.0,              # cloud cover (0-100%)
-    precipitation=80.0,           # rain (0-100%)
-    precipitation_deposits=60.0,  # puddles on the ground (0-100%)
-    wind_intensity=70.0,          # wind (0-100%)
-    fog_density=50.0,             # fog density (0-100%)
-    fog_distance=10.0,            # fog distance (meters)
-    wetness=100.0,                # wet road (0-100%)
-    sun_altitude_angle=-30.0      # night (< 0 = below horizon)
-)
-world.set_weather(weather)
+```bash
+systemd-run --user --scope -p MemoryMax=8G \
+    ./carla/CarlaUE4.sh -quality-level=Medium -nosound -RenderOffScreen
 ```
 
-Available presets: ClearNoon, CloudyNoon, WetNoon, WetCloudyNoon, MidRainyNoon, HardRainNoon, SoftRainNoon, ClearSunset, CloudySunset, WetSunset, HardRainSunset, SoftRainSunset.
+| Flag | Why |
+|---|---|
+| `--user --scope` | Runs CARLA in a transient user scope; the kernel enforces `MemoryMax` on the whole UE4 process tree |
+| `-p MemoryMax=8G` | Hard RSS cap — the kernel OOM-kills CARLA before it can swap-thrash the rest of the system |
+| `-quality-level=Medium` | Cuts texture and mesh detail; saves ~1–2 GB RAM with no effect on camera output |
+| `-nosound` | Disables the audio subsystem; saves ~200–400 MB |
+| `-RenderOffScreen` | Disables the UE4 render window entirely; saves ~3–4 GB RAM and frees GPU bandwidth for inference |
 
-Night mode activates automatically when `sun_altitude_angle < 0`, turning on street lights and vehicle headlights.
+To monitor GPU memory (GTT/shmem) during the run:
 
-### Post-processing with Augmentations
+```bash
+./tools/memwatch.sh &
+```
 
-CARLA doesn't simulate camera artifacts (grain, motion blur). For that, apply augmentations in post-processing with Albumentations:
+**Step 2 — Launch the app.**
+
+```bash
+.venv/bin/python app/main.py
+```
+
+The app auto-starts the inference service (`inference/service.py`) in the `.venv-infer` Python 3.12 environment when **▶ Run YOLO** is toggled. YOLO inference runs on the RX 9060 XT via ROCm at ~14 ms per frame.
+
+### Memory budget (screen recording, demos)
+
+The 16 GB box runs close to its limit with CARLA + the app + ROCm inference all
+up, and most of the GPU working set lives in **GTT** — shared memory carved
+from system RAM that is invisible to RSS and to `MemoryMax`. Anything extra
+(a screen recorder, a browser) can push the machine into swap-thrash: the
+desktop freezes and all cores peg at 100 % (that's the kernel reclaiming
+memory, not the app). Two settings keep the budget in check:
+
+- **`CROP_MAX_SIDE` defaults to 640** (GPU tensor memory scales with the
+  *square* of the crop side, so 640 needs ~2.2× less than 960). For
+  accuracy-first runs with nothing else open:
+  `SEM_CROP_MAX_SIDE=960 .venv/bin/python app/main.py`
+- **`inference/service.py` sets `PYTORCH_HIP_ALLOC_CONF`** so the ROCm caching
+  allocator returns freed blocks instead of hoarding them in GTT. An explicit
+  env var from the launcher still overrides it.
+
+When recording: launch CARLA with `-quality-level=Low`, and close the browser
+first — it is typically holding 1–2 GB you will need.
+
+### In the UI
+
+1. **Connect CARLA…** — choose host, map, vehicle count, demand weights, and green times
+2. **Double-click each arm** in the plan view → draw the inbound lane polygon → Save
+3. **▶ Run YOLO (live)** — starts the inference service and the analysis worker
+4. **🧠 Adaptive signals** — enables adaptive timing; watch green seconds shift as queues build
+
+The **Signal logic** panel shows in real time what the controller decided each cycle: per-axis car and pedestrian counts, the resulting green seconds, whether a pedestrian crossing phase was triggered, and the verdict (favouring N–S / favouring E–W / balanced).
+
+### Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| CARLA terminal spams `ERROR: Invalid session: no stream available with id N` | A previous app instance is still alive and its camera listeners keep retrying against the freshly restarted server (IDs 2–5 are the four pole cameras) | `pkill -f "app/main.py"`, then reconnect |
+| Desktop freezes, all CPU cores at 100 % | RAM exhaustion — GTT/shmem pressure from CARLA + inference (+ recorder); the pegged cores are kernel reclaim, not the app | See *Memory budget* above; close other apps, keep `CROP_MAX_SIDE` at 640 |
+| `DemandManager recovery spawn …` lines during a run | The vehicle pool ran dry, so the manager fell back to a fresh spawn — harmless, but frequent recovery spawns reintroduce the UE4 spawn-churn leak | Expected occasionally; if constant, lower the vehicle target |
+| `time-out of 30000ms while waiting for the simulator` | CARLA still booting, or it was OOM-killed by the `MemoryMax` scope | `systemctl --user status run-*.scope`; relaunch CARLA |
+| Walker navigation crash on server boot | Stale `OpenDriveMap.obj` nav cache from a previous generated map | The app cleans this on exit; delete `carla/CarlaUE4/Content/Carla/Maps/Nav/*` manually if it crashed before cleanup |
+
+---
+
+## Edge deployment roadmap
+
+The long-term goal is to run the full pipeline on a device the size of a deck of cards mounted on the signal pole — no cloud, no workstation.
+
+### What fits where
+
+| Component | Today | Edge target |
+|---|---|---|
+| CARLA simulation | Workstation GPU | Not needed (replaced by real cameras) |
+| YOLO inference | RX 9060 XT, ~14 ms/frame | Jetson Orin Nano / Raspberry Pi 5 + Coral USB |
+| Signal controller (PhaseController) | Python on workstation | Any microcomputer, or even an MCU (pure logic) |
+
+### The training pipeline
+
+CARLA's unique value here is free, perfectly labelled training data. Every actor in the scene has ground-truth position and class — data that would cost thousands of hours to label manually.
+
+**Step 1 — Generate a domain-specific dataset from CARLA.**
+Script CARLA to capture labelled frames across varied traffic densities, weather presets (ClearNoon → HardRainNight), and times of day. Augment in post with Albumentations (sensor noise, motion blur, JPEG compression) to cover camera imperfections CARLA doesn't simulate.
 
 ```python
 import albumentations as A
-
 augment = A.Compose([
-    A.GaussNoise(var_limit=(10, 50)),                          # grain / sensor noise
-    A.MotionBlur(blur_limit=7),                                 # motion blur
-    A.RandomBrightnessContrast(p=0.5),                          # lighting variation
-    A.RandomFog(fog_coef_lower=0.1, fog_coef_upper=0.3),        # extra fog
-    A.RandomSunFlare(src_radius=100, p=0.3),                    # sun reflections
-    A.ImageCompression(quality_lower=40, quality_upper=80),      # JPEG compression (cheap camera)
+    A.GaussNoise(var_limit=(10, 50)),
+    A.MotionBlur(blur_limit=7),
+    A.RandomBrightnessContrast(p=0.5),
+    A.ImageCompression(quality_lower=40, quality_upper=80),
 ])
-
-augmented = augment(image=frame)["image"]
 ```
 
-### Generation pipeline
-
-The CARLA + Albumentations combination covers virtually all real-world conditions:
-
-| Condition | Source |
-|---|---|
-| Rain, fog, night, sunset | CARLA (native) |
-| Puddles, wet road, wind | CARLA (native) |
-| Grain / sensor noise | Albumentations (post) |
-| Motion blur, defocus | Albumentations (post) |
-| Sun reflections / lens flare | Albumentations (post) |
-| Cheap camera compression | Albumentations (post) |
-| Brightness / contrast variations | Albumentations (post) |
-
-This allows generating large, varied datasets without leaving the desk, with perfect ground truth (bounding boxes, segmentation) generated automatically by the simulator.
-
-## Model Optimization for Edge Deployment
-
-The end goal is to compress the model as much as possible for lightweight inference. Training happens on the development machine (Ryzen 5 7500F + RX 9060 XT 16GB via ROCm), and the optimized model targets resource-constrained environments.
-
-### Philosophy: Train big, compress maximally
-
-The optimization pipeline follows a progressive compression chain. Each step reduces the model while preserving as much accuracy as possible.
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    DEVELOPMENT MACHINE                          │
-│                  (Ryzen 5 7500F + RX 9060 XT)                   │
-│                                                                 │
-│   1. TRAIN TEACHER                                              │
-│      Full YOLOv8n → large but accurate model                    │
-│      ~6MB, FP32, ~3.2M parameters                               │
-│                          │                                      │
-│                          ▼                                      │
-│   2. KNOWLEDGE DISTILLATION                                     │
-│      Train "student" that mimics the teacher                    │
-│      MobileNetV3-Small or custom CNN                            │
-│      ~500KB-1MB, FP32, ~100-500K parameters                     │
-│                          │                                      │
-│                          ▼                                      │
-│   3. PRUNING                                                    │
-│      Remove neurons and connections that contribute little       │
-│      50-80% weight reduction with <5% accuracy loss              │
-│      ~200-500KB                                                 │
-│                          │                                      │
-│                          ▼                                      │
-│   4. QUANTIZATION                                               │
-│      FP32 (32 bits) → INT8 (8 bits)                             │
-│      ~4x size reduction                                         │
-│      ~50-150KB                                                  │
-│                          │                                      │
-│                          ▼                                      │
-│   5. EXPORT                                                     │
-│      Convert to optimized format (ONNX / TFLite)                │
-│      Final model: ~50-150KB, INT8, ready for deployment         │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### Step 1 — Train the Teacher (YOLOv8n)
-
-The "teacher" model is YOLOv8n trained/fine-tuned on the development machine. It's too large for constrained environments but serves as an accuracy reference and to generate labels automatically.
+**Step 2 — Train a large teacher model (YOLOv11l/x).**
+The teacher becomes an expert on this specific intersection: your camera angles, vehicle scale, approach geometry. It will be far more accurate on this domain than a generic pretrained model.
 
 ```python
 from ultralytics import YOLO
-
-# Train on RX 9060 XT via ROCm
-# Install: pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.2
-model = YOLO("yolov8n.pt")
-model.train(data="intersection_dataset.yaml", epochs=100, imgsz=640, device=0)
+teacher = YOLO("yolo11l.pt")
+teacher.train(data="intersection.yaml", epochs=100, imgsz=960, device=0)
 ```
 
-The teacher generates "soft labels" — instead of "car" or "not car", it produces probabilities like "92% car, 5% truck, 3% background". These probabilities contain rich information about what the model learned.
+**Step 3 — Distil to a tiny student.**
+Train a small model (YOLOv8n or a custom nano architecture) to match the teacher's soft output distributions, not just the hard labels. The student inherits domain knowledge at a fraction of the size. Ultralytics has built-in distillation support.
 
-### Step 2 — Knowledge Distillation
-
-The student is a much smaller model that learns to mimic the teacher's probabilities, not the original data. This works better than training the student directly because the teacher's soft labels encode inter-class relationships that hard labels (0 or 1) don't capture.
+**Step 4 — Prune + INT8 quantize.**
+Structured pruning removes low-importance filters. INT8 quantization (with a small calibration dataset from the CARLA capture) cuts the model to ~50–150 KB and brings 3–4× faster inference — critical for a Raspberry Pi or Coral TPU.
 
 ```python
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-
-class TinyCarCounter(nn.Module):
-    """
-    Minimal student model to classify: 0, 1-3, 4+ cars per zone.
-    Architecture: input → 3 conv layers → global avg pool → 3 classes
-    ~50-200K parameters (vs 3.2M in YOLOv8n)
-    """
-    def __init__(self):
-        super().__init__()
-        self.features = nn.Sequential(
-            nn.Conv2d(3, 16, 3, stride=2, padding=1), nn.ReLU(), nn.BatchNorm2d(16),
-            nn.Conv2d(16, 32, 3, stride=2, padding=1), nn.ReLU(), nn.BatchNorm2d(32),
-            nn.Conv2d(32, 64, 3, stride=2, padding=1), nn.ReLU(), nn.BatchNorm2d(64),
-            nn.AdaptiveAvgPool2d(1),
-        )
-        self.classifier = nn.Linear(64, 3)  # 3 classes: 0, 1-3, 4+
-
-    def forward(self, x):
-        x = self.features(x)
-        x = x.view(x.size(0), -1)
-        return self.classifier(x)
-
-
-def distillation_loss(student_logits, teacher_logits, true_labels, temperature=3.0, alpha=0.7):
-    """
-    Combines two learning signals:
-    - soft_loss: mimic the teacher's probabilities (knowledge transfer)
-    - hard_loss: get the real labels right (ground truth)
-    alpha controls the relative weight: higher = more focus on the teacher
-    """
-    soft_loss = F.kl_div(
-        F.log_softmax(student_logits / temperature, dim=1),
-        F.softmax(teacher_logits / temperature, dim=1),
-        reduction="batchmean"
-    ) * (temperature ** 2)
-
-    hard_loss = F.cross_entropy(student_logits, true_labels)
-
-    return alpha * soft_loss + (1 - alpha) * hard_loss
+# Export the student to TFLite INT8
+student.export(format="tflite", int8=True, data="calibration.yaml")
 ```
 
-The key here is **problem simplification**. YOLOv8n does full object detection (bounding boxes + classes). The student only does classification: given a crop of an intersection zone, how many cars are there? This reduces complexity by orders of magnitude.
+**Step 5 — Deploy the student to edge hardware.**
+The `inference/service.py` socket interface is already decoupled from the app. Replacing it with a service running on edge hardware (or simulating hardware constraints in a throttled Docker container) requires no changes to the rest of the system.
 
-### Step 3 — Pruning
-
-After distillation, many neurons in the student model contribute little to the final result. Pruning removes them.
-
-```python
-import torch.nn.utils.prune as prune
-
-# Unstructured pruning — removes individual weights (more flexible)
-for name, module in student_model.named_modules():
-    if isinstance(module, nn.Conv2d):
-        prune.l1_unstructured(module, name="weight", amount=0.5)  # remove 50%
-
-# Structured pruning — removes entire filters (more hardware-efficient)
-for name, module in student_model.named_modules():
-    if isinstance(module, nn.Conv2d):
-        prune.ln_structured(module, name="weight", amount=0.3, n=1, dim=0)
-
-# Make pruning permanent (remove the mask and shrink the model)
-for name, module in student_model.named_modules():
-    if isinstance(module, (nn.Conv2d, nn.Linear)):
-        prune.remove(module, "weight")
-```
-
-Pruning types and trade-offs:
-
-| Type | What it removes | Typical reduction | Accuracy impact |
-|---|---|---|---|
-| Unstructured | Individual weights (scattered zeros) | 50-90% of weights | Low |
-| Structured | Entire filters/channels | 30-70% of filters | Medium |
-| Iterative | Cycles of prune → retrain → prune | Maximum possible | Controlled |
-
-Iterative pruning is the most effective: prune 20% → retrain 10 epochs → prune another 20% → retrain → repeat. In each cycle, the model readapts to the new structure.
-
-### Step 4 — Quantization
-
-Convert from FP32 (floating point, 32 bits) to INT8 (integer, 8 bits). Edge devices are much faster with integer arithmetic.
-
-```python
-import tensorflow as tf
-
-# Convert PyTorch → ONNX → TFLite (most robust path for edge deployment)
-
-# 1. Export to ONNX
-torch.onnx.export(student_model, dummy_input, "student.onnx", opset_version=13)
-
-# 2. Convert ONNX → TFLite with INT8 quantization
-# (using onnx2tf or ai-edge-torch)
-
-# Post-training quantization with calibration dataset
-converter = tf.lite.TFLiteConverter.from_saved_model("student_saved_model")
-converter.optimizations = [tf.lite.Optimize.DEFAULT]
-
-# Calibration dataset — the quantizer needs real samples
-# to compute activation ranges for each layer
-def representative_dataset():
-    for image in calibration_images[:100]:
-        yield [image.astype(np.float32)]
-
-converter.representative_dataset = representative_dataset
-
-# Force full INT8 (no float fallback)
-converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
-converter.inference_input_type = tf.int8
-converter.inference_output_type = tf.int8
-
-tflite_model = converter.convert()
-
-with open("student_int8.tflite", "wb") as f:
-    f.write(tflite_model)
-
-print(f"Final size: {len(tflite_model) / 1024:.1f} KB")
-```
-
-Quantization impact:
-
-| Precision | Size per weight | 200K params model | Speed |
-|---|---|---|---|
-| FP32 | 4 bytes | ~800 KB | Baseline |
-| FP16 | 2 bytes | ~400 KB | ~1.5x |
-| INT8 | 1 byte | ~200 KB | ~3-4x |
-| INT4 | 0.5 bytes | ~100 KB | ~5-6x (limited) |
-
-### Label generation pipeline
-
-The teacher (YOLOv8) generates the labels for the student automatically:
-
-```python
-# 1. Run YOLOv8 on all training images
-teacher = YOLO("best_teacher.pt")
-
-# 2. For each image, count cars per zone and generate label
-labels = []
-for img_path in training_images:
-    results = teacher(img_path, verbose=False)[0]
-    car_count = sum(1 for box in results.boxes if int(box.cls[0]) in VEHICLE_CLASSES)
-
-    if car_count == 0:
-        label = 0     # empty
-    elif car_count <= 3:
-        label = 1     # few
-    else:
-        label = 2     # many
-
-    labels.append((img_path, label))
-
-# 3. Train the student with these labels
-#    (+ distillation with teacher's soft labels)
-```
-
-### Success metrics
-
-The model is ready for deployment when:
+### Target benchmarks
 
 | Metric | Target |
 |---|---|
-| Model size (.tflite / .onnx) | < 150 KB |
-| RAM required (tensor arena) | < 200 KB |
-| Accuracy | > 85% on all 3 classes |
-| Inference time | < 100ms |
+| Model size | < 150 KB |
+| RAM (tensor arena) | < 256 KB |
+| Inference latency | < 100 ms per frame |
+| Detection accuracy | > 85 % on held-out CARLA frames |
 
-### Useful tools
+### Domain transfer
 
-- **Netron** — visualize model architectures (ONNX, TFLite, PyTorch). Essential for understanding what you're compressing.
-- **Edge Impulse** — web platform for training and deploying lightweight ML. Good for quick prototyping.
-- **ONNX Runtime Mobile** — alternative to TFLite, easier to convert from PyTorch.
-- **ai-edge-torch** — Google tool to convert PyTorch → TFLite directly.
+The student will be an expert on synthetic CARLA traffic. For a real intersection, a sim-to-real fine-tuning step is needed — either via domain randomisation during training (varied textures, weather, time of day) or by fine-tuning on a small real-world capture. For the CARLA-based demo, this is not a concern.
 
-## TODO
+---
 
-### CARLA Simulation
-- [x] Set up CARLA 0.9.15 simulation environment
-- [x] Create intersection data capture script (`carla_intersection.py`)
-- [ ] Update `carla_intersection.py` to use 4 semaphore-mounted cameras instead of 1 overhead
-- [ ] Generate dataset with weather variations (sun, rain, fog, night)
-- [ ] Apply augmentations (grain, blur, compression) to generated dataset
+## Further reading
 
-### Core Pipeline
-- [ ] Implement `camera_detector.py` — per-camera YOLO vehicle detection + count
-- [ ] Implement `signal_decision.py` — fuse 4 camera outputs into signal decision
-- [ ] Export models to ONNX
-- [ ] Add temporal smoothing to decision logic
-- [ ] Add tracking to distinguish stopped vs moving vehicles
-- [ ] Per-camera failure handling (degrade gracefully)
-
-### Model Optimization
-- [ ] Define and train student model architecture (TinyCarCounter)
-- [ ] Implement knowledge distillation pipeline (teacher → student)
-- [ ] Apply iterative pruning with retraining
-- [ ] Quantize model to INT8 with calibration dataset
-- [ ] Export to optimized format (ONNX / TFLite)
-- [ ] Benchmark: size < 150KB, latency < 100ms, accuracy > 85%
-
-### Future
-- [ ] Web interface for monitoring (FastAPI + Vue.js)
-- [ ] Explore RL with SynTraC as an alternative to fixed rules
+- [`REFERENCE.md`](REFERENCE.md) — full technical reference: every module, the signal-timing algorithm in depth, all data formats, config knobs, and a glossary.
+- [`brainstorming.md`](../brainstorming.md) — deferred ideas, open questions, per-approach fairness, RL alternatives.

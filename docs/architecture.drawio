@@ -1,125 +1,164 @@
 <mxfile host="app.diagrams.net" type="device">
   <diagram name="semOptimizer architecture" id="semopt-arch">
-    <mxGraphModel dx="1400" dy="1000" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1500" pageHeight="1100" math="0" shadow="0">
+    <mxGraphModel dx="1400" dy="1000" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1100" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
 
+        <!-- ===== title ===== -->
+        <mxCell id="title" value="semOptimizer — adaptive traffic signals:  CARLA simulation  +  YOLO perception  +  Qt control UI" style="text;html=1;fontSize=18;fontStyle=1;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="10" width="1380" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="subtitle" value="How to read: follow the numbered arrows ①→⑧. Camera frames flow left→right; perceived demand flows back into signal timing. Red arrows are the closed control loop." style="text;html=1;fontSize=12;align=left;fontColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="40" y="40" width="1380" height="20" as="geometry" />
+        </mxCell>
+
         <!-- ===== background containers (drawn first = behind) ===== -->
-        <mxCell id="app" value="Desktop App  —  .venv312 / Python 3.7 (pinned by the CARLA egg)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8fbff;strokeColor=#6c8ebf;dashed=1;verticalAlign=top;fontStyle=1;fontSize=14;spacingTop=4;" vertex="1" parent="1">
-          <mxGeometry x="40" y="160" width="1330" height="650" as="geometry" />
+        <mxCell id="app" value="Desktop App  —  one process, three Qt threads  ·  .venv / Python 3.7 (pinned by the CARLA egg)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8fbff;strokeColor=#6c8ebf;dashed=1;verticalAlign=top;fontStyle=1;fontSize=14;spacingTop=4;" vertex="1" parent="1">
+          <mxGeometry x="40" y="200" width="1380" height="560" as="geometry" />
         </mxCell>
-        <mxCell id="cw" value="CarlaWorker (QThread) — owns CARLA + signal control" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#eaf1fb;strokeColor=#6c8ebf;verticalAlign=top;fontStyle=1;fontSize=12;spacingTop=4;" vertex="1" parent="1">
-          <mxGeometry x="70" y="240" width="390" height="550" as="geometry" />
+        <mxCell id="cw" value="CarlaWorker (QThread) — owns the sim + signal control" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#eaf1fb;strokeColor=#6c8ebf;verticalAlign=top;fontStyle=1;fontSize=12;spacingTop=4;" vertex="1" parent="1">
+          <mxGeometry x="70" y="240" width="390" height="490" as="geometry" />
         </mxCell>
-        <mxCell id="iw" value="IntersectionWindow (main / Qt thread)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#eaf1fb;strokeColor=#6c8ebf;verticalAlign=top;fontStyle=1;fontSize=12;spacingTop=4;" vertex="1" parent="1">
-          <mxGeometry x="500" y="240" width="440" height="550" as="geometry" />
+        <mxCell id="iw" value="IntersectionWindow (main / Qt thread) — display + routing" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#eaf1fb;strokeColor=#6c8ebf;verticalAlign=top;fontStyle=1;fontSize=12;spacingTop=4;" vertex="1" parent="1">
+          <mxGeometry x="500" y="240" width="430" height="490" as="geometry" />
         </mxCell>
         <mxCell id="aw" value="AnalysisWorker (QThread) — inference client" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#eaf1fb;strokeColor=#6c8ebf;verticalAlign=top;fontStyle=1;fontSize=12;spacingTop=4;" vertex="1" parent="1">
-          <mxGeometry x="980" y="240" width="370" height="300" as="geometry" />
+          <mxGeometry x="970" y="240" width="410" height="290" as="geometry" />
         </mxCell>
-        <mxCell id="inf" value="Inference Service — .venv-infer / Python 3.12 + ROCm  (separate process)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#eafaea;strokeColor=#82b366;verticalAlign=top;fontStyle=1;fontSize=12;spacingTop=4;" vertex="1" parent="1">
-          <mxGeometry x="980" y="850" width="370" height="150" as="geometry" />
+        <mxCell id="inf" value="Inference Service — separate process  ·  .venv-infer / Python 3.12 + ROCm 6.4  ·  RX 9060 XT" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#eafaea;strokeColor=#82b366;verticalAlign=top;fontStyle=1;fontSize=12;spacingTop=4;" vertex="1" parent="1">
+          <mxGeometry x="970" y="810" width="410" height="190" as="geometry" />
         </mxCell>
 
         <!-- ===== CARLA process (separate) ===== -->
-        <mxCell id="carla" value="CARLA Server (UE4 process)&#10;map · physics · 4 pole sensors · traffic lights" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontStyle=1;fontSize=12;" vertex="1" parent="1">
-          <mxGeometry x="70" y="40" width="390" height="90" as="geometry" />
+        <mxCell id="carla" value="CARLA Server (UE4) — separate, memory-scoped process&#10;map · physics · 4 pole sensors · traffic lights&#10;systemd-run --user --scope -p MemoryMax=8G ./carla/CarlaUE4.sh&#10;-quality-level=Medium (Low while screen-recording) -nosound -RenderOffScreen" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontStyle=1;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="70" y="70" width="500" height="100" as="geometry" />
         </mxCell>
 
         <!-- ===== CarlaWorker components ===== -->
-        <mxCell id="cw_loop" value="world.tick() loop  (synchronous mode)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
-          <mxGeometry x="90" y="300" width="350" height="44" as="geometry" />
+        <mxCell id="cw_loop" value="world.tick() loop — sync mode @ 20 Hz, paced to real time" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="90" y="285" width="350" height="40" as="geometry" />
         </mxCell>
-        <mxCell id="cw_cam" value="4 Pole Cameras  →  RGB frames" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
-          <mxGeometry x="90" y="360" width="350" height="44" as="geometry" />
+        <mxCell id="cw_cam" value="4 pole cameras → RGB frames (10 Hz per arm)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="90" y="335" width="350" height="40" as="geometry" />
         </mxCell>
-        <mxCell id="cw_dm" value="DemandManager&#10;spawn · recycle · ground-truth counts" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
-          <mxGeometry x="90" y="420" width="350" height="54" as="geometry" />
+        <mxCell id="cw_dm" value="DemandManager — vehicle pool&#10;prefill underground at startup · teleport in/out, no spawn churn" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="90" y="385" width="350" height="54" as="geometry" />
         </mxCell>
-        <mxCell id="cw_pc" value="PhaseController&#10;phases · deadband · reallocate() · force-off" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;fontSize=11;" vertex="1" parent="1">
-          <mxGeometry x="90" y="500" width="350" height="72" as="geometry" />
+        <mxCell id="cw_pm" value="PedestrianManager — walker pool&#10;prefill underground · spread + clearance on spawn · waiting_counts()" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="90" y="449" width="350" height="54" as="geometry" />
+        </mxCell>
+        <mxCell id="cw_pc" value="PhaseController  (signal-control core)&#10;NS/EW adaptive green split · deadband · force-off&#10;ped demand · PED_CROSS phase · ped wait timer" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="90" y="513" width="350" height="76" as="geometry" />
         </mxCell>
 
         <!-- ===== IntersectionWindow components ===== -->
-        <mxCell id="iw_tb" value="Toolbar:  Connect CARLA · Run YOLO · 🧠 Adaptive" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
-          <mxGeometry x="520" y="300" width="400" height="44" as="geometry" />
+        <mxCell id="iw_tb" value="Toolbar — the 3 run steps:  Connect CARLA · Run YOLO · 🧠 Adaptive" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="520" y="285" width="390" height="40" as="geometry" />
         </mxCell>
-        <mxCell id="iw_cache" value="_latest_frames cache" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
-          <mxGeometry x="520" y="360" width="400" height="40" as="geometry" />
+        <mxCell id="iw_cache" value="_latest_frames cache  (newest frame per arm)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="520" y="335" width="390" height="36" as="geometry" />
         </mxCell>
-        <mxCell id="iw_plan" value="PlanView + Semaphores" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
-          <mxGeometry x="520" y="412" width="400" height="40" as="geometry" />
+        <mxCell id="iw_plan" value="PlanView + semaphores  (top-down intersection view)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="520" y="381" width="390" height="36" as="geometry" />
         </mxCell>
-        <mxCell id="iw_grid" value="CameraGrid (2×2 tiles + overlays)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
-          <mxGeometry x="520" y="464" width="400" height="40" as="geometry" />
+        <mxCell id="iw_grid" value="CameraGrid  (2×2 live tiles + detection overlays)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="520" y="427" width="390" height="36" as="geometry" />
         </mxCell>
-        <mxCell id="iw_perc" value="Perception dock (per-arm counts)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
-          <mxGeometry x="520" y="516" width="400" height="40" as="geometry" />
+        <mxCell id="iw_perc" value="Perception dock  (per-arm car counts + weighted demand)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="520" y="473" width="390" height="36" as="geometry" />
         </mxCell>
-        <mxCell id="iw_sig" value="Signal-logic panel&#10;badge · cars→green · split bar" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;fontSize=11;" vertex="1" parent="1">
-          <mxGeometry x="520" y="568" width="400" height="58" as="geometry" />
+        <mxCell id="iw_ped" value="Pedestrian panel  (crossing badge · People waiting count)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ede8f5;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="520" y="519" width="390" height="36" as="geometry" />
         </mxCell>
-        <mxCell id="iw_mgr" value="InferenceServiceManager (launches process)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
-          <mxGeometry x="520" y="640" width="400" height="46" as="geometry" />
+        <mxCell id="iw_sig" value="Signal-logic panel&#10;ADAPTIVE/FIXED badge · count→green table · People row · split bar · verdict" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="520" y="565" width="390" height="56" as="geometry" />
+        </mxCell>
+        <mxCell id="iw_mgr" value="InferenceServiceManager  (starts/stops the .venv-infer subprocess)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="520" y="631" width="390" height="40" as="geometry" />
         </mxCell>
 
         <!-- ===== AnalysisWorker components ===== -->
-        <mxCell id="aw_crop" value="crop lane ROI · batch arms" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
-          <mxGeometry x="1000" y="300" width="330" height="44" as="geometry" />
+        <mxCell id="aw_crop" value="crop lane + crossing ROIs per arm&#10;long side capped at CROP_MAX_SIDE = 640 (env SEM_CROP_MAX_SIDE), never upscaled" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="990" y="285" width="370" height="54" as="geometry" />
         </mxCell>
-        <mxCell id="aw_anal" value="analyze_tracks&#10;lane assign · distance weight" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
-          <mxGeometry x="1000" y="360" width="330" height="50" as="geometry" />
+        <mxCell id="aw_anal" value="analyze_tracks  (lane assignment · distance weighting)&#10;assign_crossing  (pedestrian zone detection)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="990" y="349" width="370" height="52" as="geometry" />
         </mxCell>
-        <mxCell id="aw_smooth" value="smooth demand (EMA)&#10;stabilise count (median)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
-          <mxGeometry x="1000" y="430" width="330" height="50" as="geometry" />
+        <mxCell id="aw_smooth" value="smooth demand (EMA)&#10;stabilise car + People counts (median window)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="990" y="411" width="370" height="50" as="geometry" />
         </mxCell>
 
         <!-- ===== Inference Service components ===== -->
-        <mxCell id="inf_model" value="YOLO model (yolo11m.pt)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
-          <mxGeometry x="1000" y="892" width="330" height="42" as="geometry" />
+        <mxCell id="inf_model" value="YOLO11m (models/yolo11m.pt) — ~14 ms/frame on RX 9060 XT&#10;PYTORCH_HIP_ALLOC_CONF set in-service: allocator returns freed GTT blocks" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="990" y="850" width="370" height="54" as="geometry" />
         </mxCell>
-        <mxCell id="inf_det" value="detect_batch (per-crop inference)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
-          <mxGeometry x="1000" y="944" width="330" height="44" as="geometry" />
+        <mxCell id="inf_det" value="detect_batch — per-crop inference, per-crop class filter&#10;(vehicles for lane ROI, persons for crossing ROI)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="990" y="914" width="370" height="54" as="geometry" />
         </mxCell>
 
         <!-- ===== Legend ===== -->
-        <mxCell id="legend" value="Legend&#10;▮ orange  = CARLA (separate process)&#10;▮ blue    = desktop app (.venv312, Py 3.7)&#10;▮ green   = inference (.venv-infer, Py 3.12 + ROCm)&#10;▮ yellow  = signal-control core&#10;→ red     = perceived cars → signal timing (the loop)" style="rounded=0;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#ffffff;strokeColor=#999999;fontSize=11;spacingLeft=8;spacingTop=6;" vertex="1" parent="1">
-          <mxGeometry x="70" y="850" width="430" height="150" as="geometry" />
+        <mxCell id="legend" value="Legend&#10;▮ orange = CARLA server (UE4, separate process, memory-scoped)&#10;▮ blue = desktop app (.venv, Python 3.7)&#10;▮ purple = pedestrian path&#10;▮ green = inference service (.venv-infer, Python 3.12 + ROCm 6.4)&#10;▮ yellow = signal-control core (PhaseController) + its readout panel&#10;→ red = perceived demand → signal timing (the closed control loop)&#10;⇢ grey dashed = lifecycle / user actions (not part of the per-frame loop)" style="rounded=0;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#ffffff;strokeColor=#999999;fontSize=11;spacingLeft=8;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="70" y="810" width="560" height="190" as="geometry" />
         </mxCell>
 
-        <!-- ===== edges ===== -->
-        <mxCell id="e1" value="tick ↔ sensor frames" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;startArrow=block;endArrow=block;fontSize=10;" edge="1" parent="1" source="carla" target="cw_loop">
+        <!-- ===== the numbered perception→control loop ===== -->
+        <mxCell id="e1" value="① tick ↔ sensor frames" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;startArrow=block;endArrow=block;fontSize=10;fontStyle=1;" edge="1" parent="1" source="carla" target="cw_loop">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e2" value="frames_ready" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=10;" edge="1" parent="1" source="cw_cam" target="iw_cache">
+        <mxCell id="e2" value="② frames_ready" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=10;fontStyle=1;" edge="1" parent="1" source="cw_cam" target="iw_cache">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e3" value="get_latest_frames()" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=10;" edge="1" parent="1" source="iw_cache" target="aw_crop">
+        <mxCell id="e3" value="③ get_latest_frames()" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=10;fontStyle=1;" edge="1" parent="1" source="iw_cache" target="aw_crop">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e4" value="crops  ·  Unix socket" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=10;" edge="1" parent="1" source="aw_crop" target="inf_det">
+        <mxCell id="e4" value="④ crops · Unix socket" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=10;fontStyle=1;" edge="1" parent="1" source="aw_crop" target="inf_det">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1410" y="312" />
+              <mxPoint x="1410" y="941" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e5" value="⑤ detections" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=10;fontStyle=1;" edge="1" parent="1" source="inf_det" target="aw_anal">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1175" y="780" />
+              <mxPoint x="1175" y="560" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e6" value="⑥ analysis_ready (cars + People)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=10;fontStyle=1;" edge="1" parent="1" source="aw_smooth" target="iw_perc">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e5" value="detections" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=10;" edge="1" parent="1" source="inf_det" target="aw_anal">
+        <mxCell id="e7" value="⑦ update_counts() — perceived cars → green split" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#D6322C;strokeWidth=2;fontColor=#D6322C;fontStyle=1;fontSize=10;" edge="1" parent="1" source="iw_perc" target="cw_pc">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e6" value="analysis_ready" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=10;" edge="1" parent="1" source="aw_smooth" target="iw_perc">
+        <mxCell id="e7b" value="⑦ update_ped_counts() — perceived People → ped demand" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#D6322C;strokeWidth=2;fontColor=#D6322C;fontStyle=1;fontSize=10;" edge="1" parent="1" source="iw_ped" target="cw_pc">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e7" value="update_counts()  (perceived cars → timing)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#D6322C;strokeWidth=2;fontColor=#D6322C;fontStyle=1;fontSize=10;" edge="1" parent="1" source="iw_perc" target="cw_pc">
-          <mxGeometry relative="1" as="geometry" />
+        <mxCell id="e8" value="⑧ set traffic-light state" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#D6322C;strokeWidth=2;fontColor=#D6322C;fontStyle=1;fontSize=10;" edge="1" parent="1" source="cw_pc" target="carla">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="50" y="551" />
+              <mxPoint x="50" y="120" />
+            </Array>
+          </mxGeometry>
         </mxCell>
-        <mxCell id="e8" value="set traffic-light state" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#D6322C;strokeWidth=2;fontColor=#D6322C;fontStyle=1;fontSize=10;" edge="1" parent="1" source="cw_pc" target="carla">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="e9" value="timing_changed" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=10;" edge="1" parent="1" source="cw_pc" target="iw_sig">
+
+        <!-- ===== status / readout edges ===== -->
+        <mxCell id="e9" value="timing_changed (+ People count)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=10;" edge="1" parent="1" source="cw_pc" target="iw_sig">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="e10" value="phase_changed" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;fontSize=10;" edge="1" parent="1" source="cw_pc" target="iw_plan">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e11" value="launch subprocess" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;fontSize=10;fontColor=#666666;strokeColor=#666666;" edge="1" parent="1" source="iw_mgr" target="inf">
+        <mxCell id="e13" value="ped_status (serving · waiting)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#9673a6;strokeWidth=2;fontColor=#9673a6;fontStyle=1;fontSize=10;" edge="1" parent="1" source="cw_pm" target="iw_ped">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- ===== lifecycle / user-action edges ===== -->
+        <mxCell id="e11" value="launches subprocess" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;fontSize=10;fontColor=#666666;strokeColor=#666666;" edge="1" parent="1" source="iw_mgr" target="inf">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="e12" value="set_adaptive()" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;fontSize=10;fontColor=#666666;strokeColor=#666666;" edge="1" parent="1" source="iw_tb" target="cw_pc">

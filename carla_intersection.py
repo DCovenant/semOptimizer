@@ -712,8 +712,8 @@ class DemandManager:
                 cand = self._idle.pop()
                 try:
                     cand.set_transform(t)
-                    cand.set_target_velocity(carla.Vector3D(0.0, 0.0, 0.0))
                     cand.set_simulate_physics(True)
+                    cand.set_target_velocity(carla.Vector3D(0.0, 0.0, 0.0))
                     cand.set_autopilot(True, self.tm_port)
                 except Exception:   # half-dead actor — drop it from the pool
                     self._destroy([cand])
