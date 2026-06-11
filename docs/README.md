@@ -1,8 +1,7 @@
 # SemOptimizer
 
-[Screencast from 2026-06-11 22-16-21.webm](https://github.com/user-attachments/assets/dde4e775-aa1b-419a-9982-e1ed33a47d31)
-[Screencast from 2026-06-11 21-48-20.webm](https://github.com/user-attachments/assets/f1e6535d-427d-4eac-b183-9d316d1c715a)
-
+[ArmCalibrationDemo.webm](https://github.com/user-attachments/assets/70d3d947-7aaf-420d-970c-04c02cf44297)
+[Demo.webm](https://github.com/user-attachments/assets/a7dbb118-d5fe-4b92-8a6b-4164e899590c)
 
 A computer vision system that watches all four approaches of a signalised intersection through pole-mounted cameras and continuously adapts the signal cycle to actual traffic demand — giving more green time to the busier axis, inserting pedestrian crossings when people are waiting, and cutting short a green that is serving nobody.
 
