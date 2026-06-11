@@ -74,8 +74,10 @@ class LaneCalibrationWindow(QMainWindow):
         act("Open image", self.on_open_image)
         tb.addSeparator()
         act("Add incoming lane", self.on_add_lane)
-        act("Finish lane", self.on_finish_lane)
+        act("Add crossing zone", self.on_add_crossing)
+        act("Finish shape", self.on_finish_lane)
         act("Delete lane", self.on_delete_lane)
+        act("Delete crossing", self.on_delete_crossing)
         tb.addSeparator()
         act("Run YOLO", self.on_run_yolo)
         tb.addSeparator()
@@ -134,18 +136,37 @@ class LaneCalibrationWindow(QMainWindow):
             f"Drawing {name}: left-click corners, then 'Finish lane'. "
             f"Anything outside an incoming lane is counted as parked/ignored.")
 
+    def on_add_crossing(self):
+        if self.canvas.pixmap_item is None:
+            QMessageBox.information(self, "No image", "Open a camera frame first.")
+            return
+        if self.canvas.mode == "add":
+            self.on_finish_lane()
+        name = f"crossing_{len(self.canvas.crossings)}"
+        self.canvas.start_lane(name, "incoming", kind="crossing")
+        self.statusBar().showMessage(
+            f"Drawing {name}: left-click corners over the pedestrian crosswalk, "
+            f"then 'Finish shape'. People standing here count as waiting pedestrians.")
+
     def on_finish_lane(self):
         lane = self.canvas.finish_lane()
         if lane is None:
-            self.statusBar().showMessage("Lane discarded (needs >= 3 corners).")
+            self.statusBar().showMessage("Shape discarded (needs >= 3 corners).")
         else:
-            self.statusBar().showMessage(f"Finished {lane.name} ({lane.direction}).")
+            tag = "crossing" if lane.kind == "crossing" else lane.direction
+            self.statusBar().showMessage(f"Finished {lane.name} ({tag}).")
         self.recompute()
 
     def on_delete_lane(self):
         if not self.canvas.lanes:
             return
         self.canvas.remove_lane(self.canvas.lanes[-1])
+        self.recompute()
+
+    def on_delete_crossing(self):
+        if not self.canvas.crossings:
+            return
+        self.canvas.remove_lane(self.canvas.crossings[-1])
         self.recompute()
 
     # detection -------------------------------------------------------------
@@ -221,6 +242,8 @@ class LaneCalibrationWindow(QMainWindow):
             "directions": {l.name: l.direction for l in self.canvas.lanes},
             "phases": {l.name: l.phase for l in self.canvas.lanes},
             "signal_state": self.signal_state,
+            "crossings": {c.name: [[float(x), float(y)] for x, y in c.points()]
+                          for c in self.canvas.crossings},
         }
 
     def _apply_calibration(self, data):
@@ -233,6 +256,11 @@ class LaneCalibrationWindow(QMainWindow):
             self.canvas.lanes.append(lane)
             for x, y in pts:
                 lane.add_vertex(QPointF(x, y))
+        for name, pts in data.get("crossings", {}).items():
+            xing = Lane(name, self.canvas, "incoming", kind="crossing")
+            self.canvas.crossings.append(xing)
+            for x, y in pts:
+                xing.add_vertex(QPointF(x, y))
         self.canvas.recolor_lanes()
         self.canvas.update_ignored()
         self.recompute()
@@ -247,8 +275,11 @@ class LaneCalibrationWindow(QMainWindow):
     def save(self, path):
         c = self.current_calibration()
         save_calibration(path, c["image"], c["size"], c["lanes"],
-                         c["directions"], c["phases"], c["signal_state"])
-        self.statusBar().showMessage(f"Saved {len(self.canvas.lanes)} lanes -> {path}")
+                         c["directions"], c["phases"], c["signal_state"],
+                         crossings=c["crossings"])
+        self.statusBar().showMessage(
+            f"Saved {len(self.canvas.lanes)} lanes, "
+            f"{len(self.canvas.crossings)} crossings -> {path}")
 
     def on_load(self):
         path, _ = QFileDialog.getOpenFileName(self, "Load calibration", "", "JSON (*.json)")

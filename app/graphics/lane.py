@@ -26,15 +26,23 @@ class VertexHandle(QGraphicsEllipseItem):
         return super().itemChange(change, value)
 
 
-class Lane:
-    """One lane: filled polygon + draggable handles + label. Has a direction."""
+CROSSING_COLOR = "#9467bd"   # purple — pedestrian crossing zones
 
-    def __init__(self, name, canvas, direction="incoming", phase=DEFAULT_PHASE):
+
+class Lane:
+    """One polygon: filled shape + draggable handles + label.
+
+    `kind` is "lane" (a driving lane, has a direction + phase, feeds vehicle
+    counting) or "crossing" (a pedestrian crossing zone, fixed purple colour)."""
+
+    def __init__(self, name, canvas, direction="incoming", phase=DEFAULT_PHASE,
+                 kind="lane"):
         self.name, self.canvas = name, canvas
         self.scene = canvas.scene
         self.direction = direction
         self.phase = phase
-        self.color = QColor("#2ca02c")
+        self.kind = kind
+        self.color = QColor(CROSSING_COLOR) if kind == "crossing" else QColor("#2ca02c")
         self.handles = []
 
         self.poly_item = QGraphicsPolygonItem()
@@ -82,7 +90,10 @@ class Lane:
         self._update_label()
 
     def _update_label(self):
-        tag = "in" if self.direction == "incoming" else "out"
+        if self.kind == "crossing":
+            tag = "xing"
+        else:
+            tag = "in" if self.direction == "incoming" else "out"
         self.label.setText(f"{self.name} ({tag})")
 
     def set_direction(self, direction):

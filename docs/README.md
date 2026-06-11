@@ -2,6 +2,8 @@
 
 A computer vision-based traffic signal optimization system. Uses **4 cameras** — one mounted on each traffic light at a 4-way intersection — to independently detect vehicle queues per approach and collectively decide, in real time, whether the signal cycle should be adjusted.
 
+> 📖 **For how the code actually works today** — architecture, threading/data flow, every module, the signal-timing logic, design decisions, data formats and config — see **[REFERENCE.md](REFERENCE.md)**. This README covers the vision, the model-compression pipeline, and the dataset-generation ideas (some of it aspirational/roadmap).
+
 ## The Problem
 
 At many intersections, traffic signals operate on fixed cycles. This leads to situations where one side has 10+ cars stopped at a red light while the green side is completely empty — unnecessary congestion.

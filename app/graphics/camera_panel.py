@@ -10,6 +10,8 @@ from PySide6.QtWidgets import QGridLayout, QLabel, QSizePolicy, QWidget
 
 _LANE_COLOR = QColor(60, 220, 90)        # vehicle in the incoming lane
 _IGNORED_COLOR = QColor(150, 150, 150)   # parked / outside the lane
+_PED_COLOR = QColor(180, 100, 220)       # pedestrian in a crossing zone
+_PED_OUT_COLOR = QColor(120, 90, 140)    # person outside any crossing
 
 _ARMS = ("N", "E", "S", "W")
 _GRID = {"N": (0, 0), "E": (0, 1), "S": (1, 0), "W": (1, 1)}
@@ -32,7 +34,8 @@ class CameraGridWidget(QWidget):
         self._labels: dict = {}
         self._pixmaps: dict = {}
         self._last_counts: dict = {arm: 0 for arm in _ARMS}
-        self._overlays: dict = {arm: [] for arm in _ARMS}   # arm -> [track dicts]
+        self._overlays: dict = {arm: [] for arm in _ARMS}      # arm -> [track dicts]
+        self._ped_overlays: dict = {arm: [] for arm in _ARMS}  # arm -> [ped dicts]
 
         for arm in _ARMS:
             lbl = QLabel()
@@ -58,8 +61,10 @@ class CameraGridWidget(QWidget):
             h, w = arr.shape[:2]
             # arr must be C-contiguous (guaranteed by CarlaWorker)
             qimg = QImage(arr.data, w, h, w * 3, QImage.Format.Format_RGB888)
-            # .copy() detaches the QImage from the numpy buffer
-            self._pixmaps[arm] = QPixmap.fromImage(qimg.copy())
+            # fromImage() converts into the pixmap's own storage, so no extra
+            # .copy() is needed to detach from the numpy buffer (that copy cost
+            # a full-frame memcpy per arm per batch on the GUI thread)
+            self._pixmaps[arm] = QPixmap.fromImage(qimg)
             self._refresh_label(arm)
 
     @Slot(object)
@@ -70,11 +75,15 @@ class CameraGridWidget(QWidget):
             if arm in self._pixmaps:
                 self._refresh_label(arm)
 
-    def set_overlay(self, arm: str, tracks: list) -> None:
-        """Store the latest tracked vehicles for an arm and redraw its tile."""
+    def set_overlays(self, arm: str, tracks: list, peds: list) -> None:
+        """Store the latest vehicle + pedestrian overlays for an arm together
+        and redraw its tile ONCE. A tile redraw rescales the full-resolution
+        pixmap, so updating the two overlay sets separately would double the
+        paint cost of every analysis pass."""
         if arm not in self._labels:
             return
         self._overlays[arm] = tracks or []
+        self._ped_overlays[arm] = peds or []
         if arm in self._pixmaps:
             self._refresh_label(arm)
 
@@ -84,6 +93,7 @@ class CameraGridWidget(QWidget):
         for arm in _ARMS:
             self._last_counts[arm] = 0
             self._overlays[arm] = []
+            self._ped_overlays[arm] = []
             ph = QPixmap(_PH_W, _PH_H)
             ph.fill(QColor(50, 50, 50))
             p = QPainter(ph)
@@ -113,10 +123,15 @@ class CameraGridWidget(QWidget):
 
         # tracked vehicles (boxes + id + distance), scaled into the tile
         self._draw_tracks(p, self._overlays.get(arm, []), scale)
+        # detected pedestrians (boxes), scaled into the tile
+        peds = self._ped_overlays.get(arm, [])
+        self._draw_peds(p, peds, scale)
+        waiting = sum(1 for pd in peds if pd.get("crossing") is not None)
 
-        # arm label + queue count, top-left
+        # arm label + queue count (+ waiting peds), top-left
         p.setFont(QFont("monospace", 10, QFont.Weight.Bold))
-        text = f" {arm}  q:{self._last_counts.get(arm, 0):2d} "
+        ped_txt = f" p:{waiting:2d}" if peds else ""
+        text = f" {arm}  q:{self._last_counts.get(arm, 0):2d}{ped_txt} "
         fm = p.fontMetrics()
         tw = fm.horizontalAdvance(text)
         th = fm.height()
@@ -145,6 +160,19 @@ class CameraGridWidget(QWidget):
             if label:
                 p.setPen(col)
                 p.drawText(int(x1), max(8, int(y1) - 2), label)
+
+    def _draw_peds(self, p: QPainter, peds: list, scale: float) -> None:
+        for pd in peds:
+            in_xing = pd.get("crossing") is not None
+            col = _PED_COLOR if in_xing else _PED_OUT_COLOR
+            x1, y1, x2, y2 = (v * scale for v in pd["box"])
+            p.setPen(QPen(col, 2, Qt.PenStyle.DashLine))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRect(int(x1), int(y1), int(x2 - x1), int(y2 - y1))
+            fx, fy = pd["foot"][0] * scale, pd["foot"][1] * scale
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(col)
+            p.drawEllipse(int(fx - 3), int(fy - 3), 6, 6)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)

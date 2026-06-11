@@ -35,6 +35,43 @@ def assign_lane(foot, calibration):
     return None
 
 
+def _dist_point_segment(px, py, ax, ay, bx, by):
+    """Distance from point (px,py) to segment (ax,ay)-(bx,by)."""
+    vx, vy = bx - ax, by - ay
+    L2 = vx * vx + vy * vy
+    if L2 <= 1e-12:
+        return ((px - ax) ** 2 + (py - ay) ** 2) ** 0.5
+    t = max(0.0, min(1.0, ((px - ax) * vx + (py - ay) * vy) / L2))
+    cx, cy = ax + t * vx, ay + t * vy
+    return ((px - cx) ** 2 + (py - cy) ** 2) ** 0.5
+
+
+# A person standing AT the kerb is what we must count, but the kerb is exactly
+# the drawn crossing polygon's border — strict containment misses someone whose
+# foot pixel lands a handful of pixels outside the line. Accept feet within
+# this many pixels of the polygon as well (at 1920×1080 capture resolution).
+CROSSING_MARGIN_PX = 30.0
+
+
+def assign_crossing(foot, calibration):
+    """Return the name of the crossing polygon containing `foot` (or within
+    CROSSING_MARGIN_PX of its border), else None.
+
+    Crossings are the manually-drawn pedestrian zones (calibration["crossings"]),
+    beside the driving lanes near the stop line. A person whose foot lands here is
+    a pedestrian waiting/crossing for that arm."""
+    for name, pts in calibration.get("crossings", {}).items():
+        if len(pts) < 3:
+            continue
+        if point_in_polygon(foot[0], foot[1], pts):
+            return name
+        edges = zip(pts, pts[1:] + pts[:1])
+        if any(_dist_point_segment(foot[0], foot[1], a[0], a[1], b[0], b[1])
+               <= CROSSING_MARGIN_PX for a, b in edges):
+            return name
+    return None
+
+
 def _run_detection(model, img: np.ndarray, arm) -> dict:
     """Core detection + lane-assignment logic shared by both public functions."""
     detections = detect_vehicles(model, img)
@@ -97,10 +134,16 @@ def analyze_tracks(arm, tracked_dets: list) -> dict:
     sum of those weights — a car at the line counts ~1.0, one far up the queue
     ~0.0. Detections outside every lane are ignored/parked.
 
+    Pedestrians (`cls == "person"`) are routed to the crossing polygons instead of
+    the lanes: each one inside a crossing is a waiting/crossing pedestrian for that
+    arm. They never count as vehicles.
+
     Returns:
-        {tracks, count, weighted_demand, phase_demand, ignored}
+        {tracks, count, weighted_demand, phase_demand, ignored,
+         peds, ped_count, ped_per_crossing}
     where `tracks` carries per-vehicle overlay data (id, box, foot, lane,
-    distance, weight) for the lane-assigned vehicles plus the ignored ones.
+    distance, weight) and `peds` the per-pedestrian overlay data (id, box, foot,
+    crossing).
     """
     cal = arm.calibration or {}
     lanes = cal.get("lanes", {})
@@ -111,7 +154,22 @@ def analyze_tracks(arm, tracked_dets: list) -> dict:
     weighted_demand = 0.0
     phase_demand: dict = {}
 
+    peds = []
+    ped_count = 0
+    ped_per_crossing: dict = {}
+
     for d in tracked_dets:
+        if d.get("cls") == "person":
+            xing = assign_crossing(d["foot"], cal)
+            if xing is None:
+                ignored += 1
+            else:
+                ped_count += 1
+                ped_per_crossing[xing] = ped_per_crossing.get(xing, 0) + 1
+            peds.append({"id": d.get("id"), "box": d["box"], "foot": d["foot"],
+                         "crossing": xing})
+            continue
+
         name = assign_lane(d["foot"], cal)
         if name is None:
             ignored += 1
@@ -133,4 +191,7 @@ def analyze_tracks(arm, tracked_dets: list) -> dict:
         "weighted_demand": weighted_demand,
         "phase_demand": phase_demand,
         "ignored": ignored,
+        "peds": peds,
+        "ped_count": ped_count,
+        "ped_per_crossing": ped_per_crossing,
     }

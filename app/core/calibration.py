@@ -7,14 +7,17 @@ Format (compatible with map_lane_assignment.ipynb, which reads the `lanes` key):
       "size": [W, H],
       "lanes":      {"lane_0": [[x, y], ...], ...},
       "directions": {"lane_0": "incoming" | "outgoing", ...},
-      "phases":     {"lane_0": "approach_A", ...}
+      "phases":     {"lane_0": "approach_A", ...},
+      "crossings":  {"crossing_0": [[x, y], ...], ...}   // pedestrian zones
     }
 """
 import json
 
 
-def save_calibration(path, image, size, lanes, directions, phases, signal_state=None):
-    """`lanes` maps name -> list of (x, y); `directions`/`phases` map name -> str."""
+def save_calibration(path, image, size, lanes, directions, phases,
+                     signal_state=None, crossings=None):
+    """`lanes`/`crossings` map name -> list of (x, y); `directions`/`phases` map
+    name -> str. `crossings` are the pedestrian crossing zones (optional)."""
     data = {
         "image": image,
         "size": list(size),
@@ -23,6 +26,8 @@ def save_calibration(path, image, size, lanes, directions, phases, signal_state=
         "directions": dict(directions),
         "phases": dict(phases),
         "signal_state": signal_state,
+        "crossings": {name: [[float(x), float(y)] for x, y in pts]
+                      for name, pts in (crossings or {}).items()},
     }
     with open(path, "w") as f:
         json.dump(data, f, indent=2)
@@ -36,4 +41,5 @@ def load_calibration(path):
     data.setdefault("lanes", {})
     data.setdefault("directions", {})
     data.setdefault("phases", {})
+    data.setdefault("crossings", {})
     return data

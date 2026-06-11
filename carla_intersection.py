@@ -93,6 +93,10 @@ _SIG_S_FROM_JUNCTION = 15.0   # metres — matches generator
 _POLE_H               = 5.0    # metres
 _LANE_W               = 3.5
 _SIDEWALK_W           = 2.0
+# Perpendicular distance from a road's centerline out to the middle of its
+# sidewalk (one driving lane + half the sidewalk). A pedestrian crosswalk runs
+# between the two sidewalks, so its kerb endpoints sit ±this from the centerline.
+_CROSSWALK_HALF_SPAN = _LANE_W + _SIDEWALK_W / 2.0
 
 
 def _pole_camera_transforms(arm_length=250.0, cam_pitch=-15.0):
@@ -237,14 +241,39 @@ class PhaseController:
     YELLOW  = 3.0
     ALL_RED = 2.0
     MIN_GREEN = 10.0
+    MAX_GREEN = 60.0   # starvation guard — no axis stays green longer than this
+    DEADBAND  = 1      # ignore axis count gaps this small (cars): 5 vs 4 → hold
+
+    # ── pedestrian crossing ("the ponder") ──────────────────────────────────
+    # When pedestrians are waiting we insert an EXCLUSIVE all-red crossing phase
+    # (every approach red so people can cross safely). It is granted
+    # opportunistically — when traffic is light or lopsided so the cost is low —
+    # but never deferred past PED_MAX_WAIT, so pedestrians are never starved.
+    # This is the "ponder": adaptive timing of the crossing, not a fixed cycle.
+    PED_CLEAR_BASE    = 7.0    # base all-red crossing seconds (time to walk across)
+    PED_CLEAR_PER_PED = 0.5    # extra seconds per waiting pedestrian
+    PED_CLEAR_MAX     = 20.0   # cap on a single crossing window
+    PED_MAX_WAIT      = 25.0   # patience: serve regardless once peds have waited this long
+    PED_LOW_TRAFFIC   = 2      # total cars at/below which a crossing is "cheap" to insert
 
     def __init__(self, ns_lights, ew_lights, ns_green=30.0, ew_green=30.0):
         self.ns = ns_lights
         self.ew = ew_lights
         self.ns_green = float(ns_green)
         self.ew_green = float(ew_green)
+        # Total green budget to keep constant when reallocating by demand, so the
+        # cycle length stays ~fixed and only the NS/EW split moves (see
+        # set_demand_split). Captured from the initial fixed times.
+        self._budget  = self.ns_green + self.ew_green
+        self._ns_count = 0          # latest perceived cars on the NS axis
+        self._ew_count = 0          # latest perceived cars on the EW axis
         self._phase   = 0
         self._elapsed = 0.0
+        # Pedestrian "ponder" state (see PED_* constants).
+        self._ped_request   = 0     # latest perceived waiting-pedestrian count
+        self._ped_wait      = 0.0   # sim-seconds peds have waited unserved
+        self._ped_active    = False # currently running the all-red crossing
+        self._ped_remaining = 0.0   # countdown of the active crossing
         for l in self.ns + self.ew:
             l.freeze(True)
         self._apply()
@@ -259,6 +288,10 @@ class PhaseController:
         G = carla.TrafficLightState.Green
         Y = carla.TrafficLightState.Yellow
         R = carla.TrafficLightState.Red
+        if self._ped_active:                       # exclusive pedestrian crossing
+            for l in self.ns + self.ew:
+                l.set_state(R)
+            return
         ns_s, ew_s = [
             (G, R), (Y, R), (R, R),
             (R, G), (R, Y), (R, R),
@@ -269,19 +302,112 @@ class PhaseController:
     # ── public API ────────────────────────────────────────────────────────────
 
     def tick(self, dt):
+        # Pedestrians accumulate wait while unserved (drives the patience cap).
+        if self._ped_request > 0 and not self._ped_active:
+            self._ped_wait += dt
+
+        # An active all-red crossing just counts down, then resumes the cycle by
+        # advancing out of the all-red phase it paused on.
+        if self._ped_active:
+            self._ped_remaining -= dt
+            if self._ped_remaining <= 0.0:
+                self._ped_active = False
+                self._ped_wait   = 0.0
+                self._elapsed    = 0.0
+                self._phase      = (self._phase + 1) % 6
+                self._apply()
+            return
+
         self._elapsed += dt
+        # Actuated early termination ("force-off"): if we're green on the lighter
+        # axis, have already served MIN_GREEN (driver-reaction safety), and the
+        # cross axis is favoured beyond the deadband, end this green now. The
+        # normal advance still runs the full yellow + all-red before cars move.
+        if self._should_force_off():
+            self._elapsed = self._duration()
         if self._elapsed >= self._duration():
+            # At the end of an all-red clearance, the junction is already empty —
+            # the cheapest moment to insert a pedestrian crossing. Ponder it here.
+            if self._phase in (2, 5) and self._should_serve_peds():
+                self._ped_active    = True
+                self._ped_remaining = min(
+                    self.PED_CLEAR_MAX,
+                    self.PED_CLEAR_BASE + self.PED_CLEAR_PER_PED * self._ped_request)
+                self._apply()       # hold every approach red for the crossing
+                return
             self._elapsed = 0.0
             self._phase   = (self._phase + 1) % 6
             self._apply()
 
+    def _should_serve_peds(self):
+        """The ponder: is now a good moment to grant the all-red crossing?
+
+        Yes when pedestrians are waiting AND either traffic is light, demand is
+        lopsided (one axis empty, so its green serves nobody), or they have waited
+        past the patience cap (fairness — never starve them)."""
+        if self._ped_request <= 0:
+            return False
+        total = self._ns_count + self._ew_count
+        lopsided = (self._ns_count == 0) != (self._ew_count == 0)
+        return (total <= self.PED_LOW_TRAFFIC
+                or lopsided
+                or self._ped_wait >= self.PED_MAX_WAIT)
+
+    def _should_force_off(self):
+        if self._elapsed < self.MIN_GREEN:
+            return False
+        # Pedestrians waiting past patience: end a light current green early so we
+        # reach the all-red crossing sooner (still pays full yellow + all-red).
+        if self._ped_request > 0 and self._ped_wait >= self.PED_MAX_WAIT:
+            cur = {0: self._ns_count, 3: self._ew_count}.get(self._phase)
+            if cur is not None and cur <= self.PED_LOW_TRAFFIC:
+                return True
+        if self._phase == 0:        # NS green — switch early toward a busier EW?
+            return (self._ew_count - self._ns_count) > self.DEADBAND
+        if self._phase == 3:        # EW green — switch early toward a busier NS?
+            return (self._ns_count - self._ew_count) > self.DEADBAND
+        return False
+
     def phase_name(self):
+        if self._ped_active:
+            return "PED_CROSS"
         return _PHASE_NAMES[self._phase]
 
     def set_green_times(self, ns_green, ew_green):
         """Optimizer hook — takes effect at the start of the next cycle."""
         self.ns_green = max(self.MIN_GREEN, ns_green)
         self.ew_green = max(self.MIN_GREEN, ew_green)
+
+    def set_counts(self, ns_count, ew_count):
+        """Latest perceived per-axis car counts. Drives both reallocate() and the
+        in-tick force-off. Pass (0, 0) to disable actuation (adaptive off)."""
+        self._ns_count = ns_count
+        self._ew_count = ew_count
+
+    def set_ped_demand(self, n):
+        """Latest perceived count of pedestrians waiting to cross (any approach).
+        Drives the ponder in tick(). Pass 0 to disable pedestrian crossings (e.g.
+        adaptive off)."""
+        self._ped_request = max(0, int(n))
+
+    def reallocate(self):
+        """Re-split the fixed green budget from the latest per-axis counts.
+
+        Deadband: within DEADBAND cars the axes count as balanced → even split,
+        nothing favoured (this is the "cars shared equally, do nothing" case).
+        Outside it, split the budget in proportion to the counts, each phase
+        clamped to [MIN_GREEN, MAX_GREEN] so the lighter axis is never starved
+        and the heavier one can't run away. Call at the start of a green phase."""
+        ns, ew = self._ns_count, self._ew_count
+        total = ns + ew
+        if total <= 0 or abs(ns - ew) <= self.DEADBAND:
+            half = self._budget / 2.0
+            self.set_green_times(half, half)
+            return
+        ns_green = self._budget * (ns / total)
+        ns_green = min(self.MAX_GREEN, max(self.MIN_GREEN, ns_green))
+        ew_green = min(self.MAX_GREEN, max(self.MIN_GREEN, self._budget - ns_green))
+        self.set_green_times(ns_green, ew_green)
 
     def unfreeze(self):
         for l in self.ns + self.ew:
@@ -342,8 +468,26 @@ def _cameras_from_lights(lights_by_arm, junction_center, pitch=-25.0):
     return transforms
 
 
+def clean_nav_cache():
+    """Delete generated-OpenDRIVE walker-nav leftovers (Nav/OpenDriveMap.obj/.bin).
+
+    generate_opendrive_world() writes these next to the server's content as a
+    side effect of building the walker navmesh. A LATER server boot re-processes
+    a leftover .obj (Recast tile build during startup) and a stale/corrupt one
+    segfaults CarlaUE4 before it even listens on port 2000. They are pure caches
+    we never use (walkers run on manual WalkerControl), so clear them whenever
+    the server isn't mid-generation: before loading a map and at app teardown."""
+    nav = os.path.join(CARLA_ROOT, "CarlaUE4", "Content", "Carla", "Maps", "Nav")
+    for name in ("OpenDriveMap.obj", "OpenDriveMap.bin"):
+        try:
+            os.remove(os.path.join(nav, name))
+        except OSError:
+            pass
+
+
 def load_opendrive_map(client, xodr_path):
     """Load a standalone OpenDRIVE .xodr as a runtime CARLA world (no UE cook)."""
+    clean_nav_cache()
     with open(xodr_path) as f:
         xodr = f.read()
     params = carla.OpendriveGenerationParameters(
@@ -365,6 +509,12 @@ def parse_demand(spec):
     return weights
 
 
+_VEH_PARK_Z      = -60.0  # idle pooled vehicles are hidden this far under the map
+                          # (below the walker pool's -50 so the two never mingle)
+_VEH_SPAWN_CLEAR = 8.0    # a spawn point is free if no active vehicle is within
+                          # this many metres (try_spawn_actor used to do this check)
+
+
 class DemandManager:
     """Keep a fixed number of vehicles recirculating through the junction.
 
@@ -376,6 +526,7 @@ class DemandManager:
 
     def __init__(self, world, client, world_map, center, weights, target):
         self.world = world
+        self.client = client
         self.map = world_map
         self.center = center
         self.weights = weights
@@ -388,6 +539,16 @@ class DemandManager:
                     if int(b.get_attribute("number_of_wheels")) == 4] or list(bps)
         self.spawns = self._build_spawns()
         self.vehicles = []
+        # Idle vehicle pool. Vehicles are NEVER destroyed mid-run: repeated
+        # vehicle spawn/destroy cycles leak memory inside the CARLA server the
+        # same way walker churn does (UE4 never fully releases the meshes —
+        # see the pool note in PedestrianManager.__init__), so the server RSS
+        # grows without bound for as long as traffic circulates. Recycled cars
+        # are parked under the map (physics off, TM unregistered) and
+        # teleported back onto an inbound lane by fill() — after the initial
+        # fill the vehicle population is constant and the server does no
+        # vehicle churn at all.
+        self._idle = []
 
     def _build_spawns(self):
         spawns = {}
@@ -408,7 +569,47 @@ class DemandManager:
         arms = [a for a in self.weights if self.spawns.get(a)]
         return random.choices(arms, weights=[self.weights[a] for a in arms])[0]
 
+    def prefill(self):
+        """Spawn all target vehicles underground at startup so fill() never
+        calls try_spawn_actor mid-run. Use inbound spawn points one at a time
+        (immediately teleporting each underground after spawn) so they don't
+        block each other."""
+        park_x = self.center.x
+        park_y = self.center.y
+        park_z = self.center.z + _VEH_PARK_Z
+        all_points = [(arm, t) for arm, ts in self.spawns.items() for t in ts]
+        if not all_points:
+            return
+        spawned = 0
+        tries = 0
+        max_tries = self.target * 8
+        while spawned < self.target and tries < max_tries:
+            _, t = all_points[tries % len(all_points)]
+            tries += 1
+            bp = random.choice(self.bps)
+            if bp.has_attribute("color"):
+                bp.set_attribute(
+                    "color", random.choice(bp.get_attribute("color").recommended_values))
+            v = self.world.try_spawn_actor(bp, t)
+            if v is None:
+                continue
+            try:
+                v.set_simulate_physics(False)
+                v.set_transform(carla.Transform(carla.Location(
+                    x=park_x + spawned * 5.0, y=park_y, z=park_z)))
+                self._idle.append(v)
+                spawned += 1
+            except Exception:
+                try:
+                    v.destroy()
+                except Exception:
+                    pass
+        print(f"DemandManager prefill: {spawned}/{self.target} vehicles staged below map.")
+
     def _spawn_one(self):
+        """Spawn a fresh vehicle directly onto the road. Only called by fill()
+        as a recovery path when the pool is empty (CARLA killed an actor mid-run
+        or prefill() staged fewer than target). Normal operation uses _release_one()."""
         arm = self._pick_arm()
         opts = list(self.spawns[arm])
         random.shuffle(opts)
@@ -421,13 +622,22 @@ class DemandManager:
             if v is not None:
                 v.set_autopilot(True, self.tm_port)
                 self.vehicles.append(v)
+                print(f"DemandManager recovery spawn on arm {arm} (pool was empty).")
                 return v
         return None
 
     def fill(self):
+        """Top active traffic back up to target. Prefers releasing pooled
+        vehicles (teleport only); falls back to spawning a fresh actor only
+        when the pool is empty (CARLA killed an actor or prefill staged fewer
+        than target). After a healthy prefill(), _spawn_one() should never fire
+        during normal operation."""
+        self._idle = [v for v in self._idle if v.is_alive]
         tries = 0
         while len(self.vehicles) < self.target and tries < self.target * 4:
-            if self._spawn_one() is None:
+            ok = (self._release_one() if self._idle
+                  else self._spawn_one() is not None)
+            if not ok:
                 tries += 1
 
     def tick(self):
@@ -440,20 +650,88 @@ class DemandManager:
         Cars that go completely off-road (no waypoint) are also recycled.
         """
         _ARM_IDS = set(ARM_ROAD_ID.values())
+        stale = []
         for v in list(self.vehicles):
             if not v.is_alive:
                 self.vehicles.remove(v)
                 continue
+            try:
+                loc = v.get_location()
+            except RuntimeError:
+                # the server already destroyed it (collision / cleanup); drop it
+                self.vehicles.remove(v)
+                continue
             wp = self.map.get_waypoint(
-                v.get_location(), project_to_road=True,
-                lane_type=carla.LaneType.Driving)
+                loc, project_to_road=True, lane_type=carla.LaneType.Driving)
             if wp is None:
-                v.destroy(); self.vehicles.remove(v); continue
+                stale.append(v); self.vehicles.remove(v); continue
             if (wp.road_id in _ARM_IDS
                     and wp.lane_id == 1          # outbound lane
                     and wp.s < _OUTBOUND_RECYCLE_S):   # near arm outer tip
-                v.destroy(); self.vehicles.remove(v)
+                stale.append(v); self.vehicles.remove(v)
+        for v in stale:
+            self._park(v)
         self.fill()
+
+    def _park(self, v):
+        """Return a recycled vehicle to the idle pool instead of destroying it
+        (see the pool note in __init__). Autopilot goes off FIRST so the TM
+        unregisters the actor before it is moved; then physics off so it
+        doesn't fall, and hide it under the map until fill() reuses it."""
+        try:
+            v.set_autopilot(False, self.tm_port)
+            v.set_simulate_physics(False)
+            v.set_transform(carla.Transform(carla.Location(
+                x=self.center.x, y=self.center.y,
+                z=self.center.z + _VEH_PARK_Z)))
+            self._idle.append(v)
+        except Exception:
+            self._destroy([v])      # parking failed — last resort
+
+    def _spawn_clear(self, t):
+        """True if no active vehicle is near the spawn transform. Replaces the
+        occupancy check try_spawn_actor did implicitly before pooling."""
+        for v in self.vehicles:
+            try:
+                if v.get_location().distance(t.location) < _VEH_SPAWN_CLEAR:
+                    return False
+            except RuntimeError:
+                continue
+        return True
+
+    def _release_one(self):
+        """Teleport an idle pooled vehicle onto a free inbound spawn point of a
+        demand-weighted arm. Returns True if a vehicle re-entered traffic."""
+        arm = self._pick_arm()
+        opts = list(self.spawns[arm])
+        random.shuffle(opts)
+        for t in opts:
+            if not self._spawn_clear(t):
+                continue
+            while self._idle:
+                cand = self._idle.pop()
+                try:
+                    cand.set_transform(t)
+                    cand.set_target_velocity(carla.Vector3D(0.0, 0.0, 0.0))
+                    cand.set_simulate_physics(True)
+                    cand.set_autopilot(True, self.tm_port)
+                except Exception:   # half-dead actor — drop it from the pool
+                    self._destroy([cand])
+                    continue
+                self.vehicles.append(cand)
+                return True
+            return False            # pool empty
+        return False                # no free spawn on that arm this tick
+
+    def _destroy(self, vehicles):
+        """Remove vehicles via a batch DestroyActor command rather than per-actor
+        actor.destroy(). In synchronous mode destroying a Traffic-Manager-driven
+        vehicle directly can leave a dangling reference in the TM thread, which
+        then throws 'trying to operate on a destroyed actor' as an uncaught C++
+        exception (std::terminate → the whole process aborts). The batch command
+        unregisters the actor from the TM atomically on the server, avoiding it."""
+        self.client.apply_batch(
+            [carla.command.DestroyActor(v) for v in vehicles])
 
     def detect_inbound(self):
         """Count vehicles per arm that are on the inbound lane (lane -1) only.
@@ -474,10 +752,339 @@ class DemandManager:
         return counts
 
     def destroy_all(self):
-        for v in self.vehicles:
-            if v.is_alive:
-                v.destroy()
+        alive = [v for v in self.vehicles + self._idle if v.is_alive]
+        if alive:
+            self._destroy(alive)
         self.vehicles = []
+        self._idle = []
+
+
+# ── pedestrians ────────────────────────────────────────────────────────────────
+# Simulation knobs for the walker generator. Kept here (not in app/config) so
+# carla_intersection.py stays importable standalone, without the Qt app.
+PED_SPEED         = 1.4    # m/s walking speed while crossing (~average adult)
+PED_SPAWN_MIN_GAP = 6.0    # min sim-seconds between pedestrian arrivals
+PED_SPAWN_MAX_GAP = 18.0   # max sim-seconds between pedestrian arrivals
+PED_MAX_ACTIVE    = 8      # cap on simultaneous walkers in the world
+PED_WAIT_GIVEUP   = 90.0   # waiting sim-seconds after which an unserved walker
+                           # leaves (despawns) — without this, in fixed mode the
+                           # cap fills with permanent statues and spawning stops
+PED_CROSS_TIMEOUT = 30.0   # crossing sim-seconds after which a walker is culled.
+                           # A stuck or run-over walker (a dead walker still
+                           # reports is_alive) otherwise lingers forever: it costs
+                           # two RPCs per tick, holds a PED_MAX_ACTIVE slot, and a
+                           # corpse on the road makes TM traffic brake for it
+                           # forever — the sim degrades a little more with each
+                           # one. Crossing normally takes ~7 s, so 30 s is stuck.
+_PED_PARK_Z        = -50.0  # idle pooled walkers are hidden this far under the map
+_PED_SPAWN_Z       = 1.0    # spawn this far above ground; physics settles them
+_PED_REACH         = 1.5    # within this many metres of the far kerb → arrived
+_CROSSWALK_SETBACK = 3.0    # place the crosswalk this far junction-ward of the stop line
+_PED_WAIT_FORWARD  = 1.25   # nudge the waiting walker this far up-arm toward oncoming
+                            # cars (away from the junction), so the pole camera that
+                            # watches the approach frames the pedestrian better
+_PED_CROSS_SPREAD  = 0.7    # ± random offset along the arm axis applied to both
+                            # start and target so concurrent crossers take parallel
+                            # lines instead of converging on the same point
+_PED_SPAWN_CLEAR   = 1.8    # don't spawn within this many metres of another walker
+
+
+class PedestrianManager:
+    """Spawn walkers on the sidewalk, hold them, and walk them across on cue.
+
+    Mirrors DemandManager but for pedestrians. At random intervals a walker is
+    spawned at one kerb of a random arm's crosswalk and stands (state "waiting").
+    When set_walk_allowed(True) (the controller's all-red PED_CROSS phase) the
+    waiting walkers start crossing to the far kerb under manual WalkerControl, and
+    are destroyed once they arrive — "appear, wait, cross, disappear".
+
+    The signal logic perceives them via the cameras like any object; this class
+    only generates the scenario. waiting_counts() is the ground-truth tally.
+    """
+
+    def __init__(self, world, lights_by_arm, center):
+        self.world = world
+        self.center = center
+        self.bps = list(world.get_blueprint_library().filter("walker.pedestrian.*"))
+        self.crosswalks = self._build_crosswalks(lights_by_arm, center)
+        self.peds = []                 # [{actor, arm, target(carla.Location), state}]
+        # Idle walker pool. Walkers are NEVER destroyed mid-run: repeated walker
+        # spawn/destroy cycles leak memory inside the CARLA server (UE4 never
+        # fully releases the skeletal meshes), so the server gets progressively
+        # slower the longer the app runs and can hang on shutdown. Finished
+        # walkers are parked under the map (physics off) and teleported back to
+        # a kerb for a later arrival — after warm-up the walker population is
+        # constant and the server does no walker churn at all.
+        self._idle = []                # parked walker actors awaiting reuse
+        self._walk_allowed = False
+        self._next_spawn_in = random.uniform(PED_SPAWN_MIN_GAP, PED_SPAWN_MAX_GAP)
+
+    def prefill(self):
+        """Spawn PED_MAX_ACTIVE walkers underground at startup so maybe_spawn()
+        never calls try_spawn_actor mid-run. Stagger park positions slightly so
+        CARLA doesn't reject overlapping no-physics actors."""
+        if not self.bps or not self.crosswalks:
+            return
+        arms = list(self.crosswalks)
+        park_z = self.center.z + _PED_PARK_Z
+        spawned = 0
+        tries = 0
+        max_tries = PED_MAX_ACTIVE * 4
+        while spawned < PED_MAX_ACTIVE and tries < max_tries:
+            tries += 1
+            arm = arms[spawned % len(arms)]
+            a, b, _ = self.crosswalks[arm]
+            yaw = math.degrees(math.atan2(b.y - a.y, b.x - a.x))
+            transform = carla.Transform(a, carla.Rotation(yaw=yaw))
+            bp = random.choice(self.bps)
+            if bp.has_attribute("is_invincible"):
+                bp.set_attribute("is_invincible", "false")
+            actor = self.world.try_spawn_actor(bp, transform)
+            if actor is None:
+                continue
+            try:
+                actor.set_simulate_physics(False)
+                actor.set_location(carla.Location(
+                    x=self.center.x + spawned * 2.0,
+                    y=self.center.y,
+                    z=park_z))
+                self._idle.append(actor)
+                spawned += 1
+            except Exception:
+                try:
+                    actor.destroy()
+                except Exception:
+                    pass
+        print(f"PedestrianManager prefill: {spawned}/{PED_MAX_ACTIVE} walkers staged below map.")
+
+    # ── geometry ────────────────────────────────────────────────────────────
+    def _build_crosswalks(self, lights_by_arm, center):
+        """Two endpoints per arm, one on each sidewalk across the roadway.
+
+        The arms are axis-aligned, so each arm runs along a cardinal axis and the
+        junction centre lies on the road centerline. The crosswalk sits a little
+        junction-ward of the stop line (the light's along-arm position) and its two
+        endpoints are ±_CROSSWALK_HALF_SPAN to either side of the *centerline* —
+        i.e. mid-sidewalk on the left and right, NOT the kerb where the pole is.
+
+        Each arm also stores `fwd`, a unit vector pointing up-arm toward oncoming
+        traffic (away from the junction); maybe_spawn() nudges the waiting walker
+        along it so the approach's pole camera frames the pedestrian better."""
+        crosswalks = {}
+        half = _CROSSWALK_HALF_SPAN
+        z = center.z + _PED_SPAWN_Z
+        for arm, light in lights_by_arm.items():
+            loc = light.get_location()
+            dx, dy = loc.x - center.x, loc.y - center.y
+            if abs(dx) >= abs(dy):
+                # E/W arm: road runs along X, crosswalk spans Y (N & S sidewalks).
+                x = loc.x - math.copysign(_CROSSWALK_SETBACK, dx)
+                a = carla.Location(x=x, y=center.y + half, z=z)
+                b = carla.Location(x=x, y=center.y - half, z=z)
+                fwd = carla.Vector3D(x=math.copysign(1.0, dx), y=0.0, z=0.0)
+            else:
+                # N/S arm: road runs along Y, crosswalk spans X (E & W sidewalks).
+                y = loc.y - math.copysign(_CROSSWALK_SETBACK, dy)
+                a = carla.Location(x=center.x + half, y=y, z=z)
+                b = carla.Location(x=center.x - half, y=y, z=z)
+                fwd = carla.Vector3D(x=0.0, y=math.copysign(1.0, dy), z=0.0)
+            crosswalks[arm] = (a, b, fwd)
+        return crosswalks
+
+    # ── public API ────────────────────────────────────────────────────────────
+    def set_walk_allowed(self, allowed):
+        """Release (True) or hold (False) waiting pedestrians. Called by the worker
+        from the controller's PED_CROSS phase.
+
+        Only the walkers already waiting when the window OPENS are released
+        (rising edge). A walker arriving mid-window stays at the kerb for the
+        next one — released with e.g. one second of all-red left it ends up
+        mid-road when traffic goes green, gets hit or blocked, and lingers as a
+        stuck actor (see PED_CROSS_TIMEOUT)."""
+        allowed = bool(allowed)
+        if allowed and not self._walk_allowed:
+            for p in self.peds:
+                if p["state"] == "waiting":
+                    p["release"] = True
+        self._walk_allowed = allowed
+
+    def _ped_clear(self, loc):
+        """True if no active pedestrian is within _PED_SPAWN_CLEAR metres of loc."""
+        for p in self.peds:
+            if not p["actor"].is_alive:
+                continue
+            try:
+                pl = p["actor"].get_location()
+                if math.sqrt((pl.x - loc.x) ** 2 + (pl.y - loc.y) ** 2) < _PED_SPAWN_CLEAR:
+                    return False
+            except Exception:
+                continue
+        return True
+
+    def maybe_spawn(self, dt):
+        """Count down to the next random arrival and spawn one walker when due."""
+        self._next_spawn_in -= dt
+        if self._next_spawn_in > 0:
+            return
+        self._next_spawn_in = random.uniform(PED_SPAWN_MIN_GAP, PED_SPAWN_MAX_GAP)
+        if not self.bps or not self.crosswalks:
+            return
+        if len([p for p in self.peds if p["actor"].is_alive]) >= PED_MAX_ACTIVE:
+            return
+
+        # Try arms in random order; pick the first arm+side with a clear waiting spot.
+        # Apply a random spread along the arm axis to both start and target so that
+        # concurrent crossers take parallel lines instead of converging on the same
+        # point (which causes walkers to block each other mid-road).
+        arms = list(self.crosswalks)
+        random.shuffle(arms)
+        chosen = None
+        for arm in arms:
+            a, b, fwd = self.crosswalks[arm]
+            spread = random.uniform(-_PED_CROSS_SPREAD, _PED_CROSS_SPREAD)
+            for s_base, t_base in ((a, b), (b, a)):
+                s = carla.Location(x=s_base.x + fwd.x * spread,
+                                   y=s_base.y + fwd.y * spread,
+                                   z=s_base.z)
+                t = carla.Location(x=t_base.x + fwd.x * spread,
+                                   y=t_base.y + fwd.y * spread,
+                                   z=t_base.z)
+                wait = carla.Location(x=s.x + fwd.x * _PED_WAIT_FORWARD,
+                                      y=s.y + fwd.y * _PED_WAIT_FORWARD,
+                                      z=s.z)
+                if self._ped_clear(wait):
+                    chosen = (arm, wait, t)
+                    break
+            if chosen:
+                break
+
+        if chosen is None:
+            return  # every waiting spot occupied — skip this arrival
+
+        arm, start, target = chosen
+        yaw = math.degrees(math.atan2(target.y - start.y, target.x - start.x))
+        transform = carla.Transform(start, carla.Rotation(yaw=yaw))
+        actor = None
+        while self._idle and actor is None:     # reuse a parked walker first
+            cand = self._idle.pop()
+            try:
+                cand.set_transform(transform)
+                cand.set_simulate_physics(True)
+                actor = cand
+            except Exception:                   # half-dead actor — replace it
+                try:
+                    cand.destroy()
+                except Exception:
+                    pass
+        if actor is None:                       # pool empty → skip this arrival
+            return
+        self.peds.append({"actor": actor, "arm": arm,
+                          "target": target, "state": "waiting",
+                          "age": 0.0})
+
+    def _park(self, actor):
+        """Return a walker to the idle pool instead of destroying it (see the
+        pool note in __init__). Halt it, switch physics off so it doesn't fall,
+        and hide it under the map until the next arrival reuses it."""
+        try:
+            actor.apply_control(carla.WalkerControl(speed=0.0))
+            actor.set_simulate_physics(False)
+            actor.set_location(carla.Location(
+                x=self.center.x, y=self.center.y, z=self.center.z + _PED_PARK_Z))
+            self._idle.append(actor)
+        except Exception:
+            try:                               # parking failed — last resort
+                actor.destroy()
+            except Exception:
+                pass
+
+    def tick(self, dt):
+        """Advance crossing walkers toward their target and recycle finished ones.
+
+        `dt` is the sim-seconds since the last call; it ages each walker so the
+        two lifecycle guards work in sim time. Released walkers get a manual
+        control toward their far kerb each tick and are destroyed on arrival.
+        Two guards keep the population healthy over long runs:
+          * waiting longer than PED_WAIT_GIVEUP → the walker leaves (despawns);
+          * crossing longer than PED_CROSS_TIMEOUT → stuck/run-over, culled.
+        Without them stuck walkers accumulate to PED_MAX_ACTIVE and stay forever
+        (per-tick RPCs, blocked traffic, no new arrivals) — the sim and the app
+        degrade progressively the longer the run."""
+        for p in list(self.peds):
+            actor = p["actor"]
+            p["age"] += dt
+            if not actor.is_alive:
+                # In synchronous mode a freshly spawned actor reports
+                # is_alive=False until the next world.tick() delivers the
+                # episode snapshot that contains it. The worker calls
+                # maybe_spawn() and tick() in the SAME loop iteration, so
+                # without this grace every new walker would be dropped from
+                # tracking on its spawn tick — leaving an orphan standing at
+                # the kerb forever: never released across, never despawned,
+                # yet still detected by the cameras (so the controller keeps
+                # granting crossings nobody uses, and the server accumulates
+                # walkers for the rest of the session).
+                if p["age"] >= 1.0:
+                    self.peds.remove(p)
+                continue
+            if p["state"] == "waiting":
+                if self._walk_allowed and p.get("release"):
+                    p["state"] = "crossing"
+                    p["age"] = 0.0          # now counts time-in-crossing
+                elif p["age"] >= PED_WAIT_GIVEUP:
+                    self._park(actor)
+                    self.peds.remove(p)
+                    continue
+                else:
+                    continue
+            # crossing
+            if p["age"] >= PED_CROSS_TIMEOUT:
+                self._park(actor)
+                self.peds.remove(p)
+                continue
+            loc = actor.get_location()
+            tgt = p["target"]
+            dx, dy = tgt.x - loc.x, tgt.y - loc.y
+            if math.sqrt(dx * dx + dy * dy) <= _PED_REACH:
+                self._park(actor)
+                self.peds.remove(p)
+                continue
+            d = math.sqrt(dx * dx + dy * dy) or 1.0
+            actor.apply_control(carla.WalkerControl(
+                direction=carla.Vector3D(x=dx / d, y=dy / d, z=0.0),
+                speed=PED_SPEED))
+
+    def waiting_counts(self):
+        """Ground-truth per-arm count of pedestrians currently waiting to cross."""
+        counts = {arm: 0 for arm in self.crosswalks}
+        for p in self.peds:
+            if p["state"] == "waiting" and p["actor"].is_alive:
+                counts[p["arm"]] += 1
+        return counts
+
+    def destroy_all(self):
+        """Teardown only — the one place walkers are actually destroyed.
+
+        Sweeps every walker actor in the world, not just the tracked ones:
+        this manager is the only walker source in the sim, and any stray that
+        slipped out of tracking (e.g. orphans from before the is_alive grace
+        fix) would otherwise survive the run and bog the server down."""
+        for actor in [p["actor"] for p in self.peds] + self._idle:
+            try:
+                if actor.is_alive:
+                    actor.destroy()
+            except Exception:
+                pass
+        self.peds = []
+        self._idle = []
+        try:
+            for actor in self.world.get_actors().filter("walker.*"):
+                try:
+                    actor.destroy()
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
 
 def run_demand_mode(world, client, world_map, center, args):
@@ -502,6 +1109,9 @@ def run_demand_mode(world, client, world_map, center, args):
     # Pole cameras — derived from actual light actor positions, looking outward
     cam_grid = CameraGrid(world, _cameras_from_lights(lights_by_arm, center))
 
+    # Pedestrians — random arrivals served by the controller's all-red ponder.
+    ped_mgr = PedestrianManager(world, lights_by_arm, center)
+
     dm.fill()
     print(f"\nRecirculating up to {args.vehicles} vehicles. Demand: {weights}")
     print(f"Cycle: NS {phase_ctrl.ns_green:.0f}s green / "
@@ -517,7 +1127,16 @@ def run_demand_mode(world, client, world_map, center, args):
             world.wait_for_tick()
             now = time.time()
 
-            phase_ctrl.tick(now - last_tick)
+            dt = now - last_tick
+            ped_mgr.maybe_spawn(dt)
+            # The standalone script has no perception, so feed the controller the
+            # ground-truth car + waiting-ped counts and release walkers during the
+            # all-red PED_CROSS phase.
+            phase_ctrl.set_counts(counts["N"] + counts["S"], counts["E"] + counts["W"])
+            phase_ctrl.set_ped_demand(sum(ped_mgr.waiting_counts().values()))
+            phase_ctrl.tick(dt)
+            ped_mgr.set_walk_allowed(phase_ctrl.phase_name() == "PED_CROSS")
+            ped_mgr.tick(dt)
             last_tick = now
 
             if not cam_grid.tick(phase_ctrl.phase_name(), counts):
@@ -528,11 +1147,12 @@ def run_demand_mode(world, client, world_map, center, args):
                 counts = dm.detect_inbound()
                 ns_q = counts["N"] + counts["S"]
                 ew_q = counts["E"] + counts["W"]
+                peds = sum(ped_mgr.waiting_counts().values())
                 print(
                     f"[{phase_ctrl.phase_name():<12}] "
                     f"N:{counts['N']} S:{counts['S']} (Σ{ns_q})  "
                     f"E:{counts['E']} W:{counts['W']} (Σ{ew_q})  "
-                    f"total:{len(dm.vehicles)}"
+                    f"peds:{peds}  total:{len(dm.vehicles)}"
                 )
                 last_report = now
 
@@ -542,6 +1162,7 @@ def run_demand_mode(world, client, world_map, center, args):
         cam_grid.destroy()
         phase_ctrl.unfreeze()
         dm.destroy_all()
+        ped_mgr.destroy_all()
 
 
 def get_junction_center(world_map, junction_id):

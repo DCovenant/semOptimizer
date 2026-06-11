@@ -33,6 +33,7 @@ PERCEPTION_WINDOW = 7
 SERVICE_MODEL   = "models/yolo11m.pt"
 CONF            = 0.25                  # detection confidence threshold
 VEHICLE_CLASSES = {1, 2, 3, 5, 7}       # COCO: bicycle, car, motorcycle, bus, truck
+PERSON_CLASSES  = {0}                   # COCO: person — counted as pedestrians, not cars
 
 # ── live tracking / analysis ───────────────────────────────────────────────────
 TRACKER           = "bytetrack.yaml"    # Ultralytics built-in tracker config
@@ -55,6 +56,15 @@ CAPTURE_H = 1080
 # analyse ~2 Hz, so capping capture rate here costs nothing and frees the sim.
 SENSOR_TICK = 0.1   # 10 Hz
 
+# Max wall-clock rate at which the worker pushes frames to the GUI. The sync loop
+# advances sim time as fast as the machine allows, so when the GPU isn't busy the
+# sim ticks far faster than real time. Emitting four 1080p frames to the GUI on
+# every sensor frame then floods the cross-thread (QueuedConnection) event queue
+# faster than the GUI can paint it: the backlog grows unbounded (each event pins
+# ~24 MB of ndarrays), FPS collapses, and the app eventually OOM-crashes. Cap the
+# *display* push to this real-time cadence; the sim + capture keep their own rate.
+FRAME_EMIT_INTERVAL = 1.0 / 30   # seconds (≈30 Hz display)
+
 # Fixed simulation step for synchronous mode. The worker drives CARLA with
 # world.tick() so physics advances this many sim-seconds per tick regardless of
 # how long rendering + GPU inference take — the sim slows in wall-clock when the
@@ -68,6 +78,25 @@ SIM_FIXED_DELTA = 0.05
 # better small/distant recall, but slower (cost grows ~quadratically). 0 = let
 # ultralytics use its default (640).
 INFER_IMGSZ = 1280
+
+# Hard cap on the EFFECTIVE inference resolution of any single lane crop. A
+# calibration whose lanes span most of the frame yields a near-full-frame crop
+# per arm; four of those inferred at INFER_IMGSZ each pass is the GPU-memory
+# load that evicts CARLA's VRAM into system RAM (GTT/shmem) and OOMed the box
+# on 2026-06-11 — MemoryMax can't see those pages. Crops are inferred at their
+# real size (never upscaled) and never above this; crops more than twice this
+# wide are decimated before shipping so the socket payload shrinks too.
+CROP_MAX_SIDE = 960
+
+# The pedestrian (crossing) crop is shipped and inferred SEPARATELY from the
+# lane crop: the crossing zone sits on the far sidewalk, so one bbox around
+# lanes+crossings would span nearly the whole frame and void the ROI saving
+# (that mistake made every crop full-frame and pushed the 16 GB box into
+# swap-thrash). The crossing strip is wide but its pedestrians stand close to
+# the pole camera (large in the image), so it tolerates being decimated before
+# sending and inferred at a lower resolution than the lane crop.
+PED_CROP_DECIMATE = 2     # keep every Nth pixel of the crossing crop (1 = off)
+PED_INFER_IMGSZ   = 960   # YOLO long-side for the (decimated) crossing crop
 
 
 def distance_weight(d):

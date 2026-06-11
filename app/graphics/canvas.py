@@ -23,6 +23,7 @@ class Canvas(QGraphicsView):
         self.pixmap_item = None
         self._buf = None
         self.lanes = []
+        self.crossings = []           # pedestrian crossing polygons (kind="crossing")
         self.det_items = []
         self.ignored_item = None
         self.ignored_label = None
@@ -49,10 +50,13 @@ class Canvas(QGraphicsView):
         h, w = self._buf.shape[:2]
         return (w, h)
 
-    # lane drawing ----------------------------------------------------------
-    def start_lane(self, name, direction):
-        self.current_lane = Lane(name, self, direction)
-        self.lanes.append(self.current_lane)
+    # lane / crossing drawing -----------------------------------------------
+    def _list_for(self, kind):
+        return self.crossings if kind == "crossing" else self.lanes
+
+    def start_lane(self, name, direction, kind="lane"):
+        self.current_lane = Lane(name, self, direction, kind=kind)
+        self._list_for(kind).append(self.current_lane)
         self.recolor_lanes()
         self.mode = "add"
         self.setDragMode(QGraphicsView.DragMode.NoDrag)
@@ -64,7 +68,7 @@ class Canvas(QGraphicsView):
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         if lane is not None and len(lane.handles) < 3:
             lane.remove()
-            self.lanes.remove(lane)
+            self._list_for(lane.kind).remove(lane)
             lane = None
         self.recolor_lanes()
         self.update_ignored()
@@ -72,14 +76,15 @@ class Canvas(QGraphicsView):
 
     def remove_lane(self, lane):
         lane.remove()
-        self.lanes.remove(lane)
+        self._list_for(lane.kind).remove(lane)
         self.recolor_lanes()
         self.update_ignored()
 
     def clear_lanes(self):
-        for lane in list(self.lanes):
+        for lane in list(self.lanes) + list(self.crossings):
             lane.remove()
         self.lanes = []
+        self.crossings = []
         self.update_ignored()
 
     def recolor_lanes(self):
@@ -100,7 +105,7 @@ class Canvas(QGraphicsView):
         w, h = self.image_size()
         path = QPainterPath()
         path.addRect(QRectF(0, 0, w, h))
-        for lane in self.lanes:
+        for lane in self.lanes + self.crossings:
             if len(lane.handles) >= 3:
                 lp = QPainterPath()
                 lp.addPolygon(lane.polygon())

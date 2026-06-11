@@ -11,9 +11,10 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (QApplication, QCheckBox, QDialog, QDialogButtonBox,
                                QDockWidget, QDoubleSpinBox, QFileDialog, QFormLayout,
-                               QFrame, QGridLayout, QLabel, QLineEdit, QMainWindow,
-                               QMessageBox, QPushButton, QSpinBox, QToolBar,
-                               QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
+                               QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
+                               QMainWindow, QMessageBox, QPushButton, QSpinBox,
+                               QToolBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
+                               QWidget)
 
 from app.core.analysis_worker import AnalysisWorker
 from app.core.carla_worker import CarlaWorker
@@ -46,6 +47,7 @@ class IntersectionWindow(QMainWindow):
         self._inference_mgr = InferenceServiceManager(model=SERVICE_MODEL)
         self._captured_arms: set = set()   # arms whose reference frame was grabbed this connection
         self._latest_frames: dict = {}     # arm -> latest live RGB frame (for analysis)
+        self._adaptive_enabled = False     # feed perceived demand into signal timing
 
         self.plan = PlanView(self.intersection, self)
         self.setCentralWidget(self.plan)
@@ -73,6 +75,14 @@ class IntersectionWindow(QMainWindow):
         self._yolo_action = QAction("▶ Run YOLO (live)", self)
         self._yolo_action.triggered.connect(self.on_toggle_yolo)
         tb.addAction(self._yolo_action)
+
+        self._adaptive_action = QAction("🧠 Adaptive signals (off)", self)
+        self._adaptive_action.setCheckable(True)
+        self._adaptive_action.setToolTip(
+            "Drive the green times from perceived (YOLO) demand instead of the "
+            "fixed timer. Needs CARLA connected and live YOLO running.")
+        self._adaptive_action.toggled.connect(self.on_toggle_adaptive)
+        tb.addAction(self._adaptive_action)
 
         tb.addSeparator()
         self._connect_action = QAction("⏵ Connect CARLA…", self)
@@ -168,12 +178,66 @@ class IntersectionWindow(QMainWindow):
             self._perc_count[key] = cnt
             self._perc_demand[key] = dem
         lay.addLayout(grid)
+        lay.addWidget(self._build_pedestrian_panel())
+        lay.addWidget(self._build_signal_logic_panel())
         lay.addStretch(1)
 
         dock = QDockWidget("Perception", self)
         dock.setWidget(panel)
         dock.setMinimumWidth(180)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
+
+    def _build_pedestrian_panel(self) -> QWidget:
+        """Pedestrian readout: total perceived peds waiting + the crossing state.
+
+        Total comes from the AnalysisWorker (sum of per-arm ped_count); the state
+        badge ('crossing now' / 'N waiting' / 'idle') comes from CarlaWorker's
+        ped_status (the controller's all-red ponder)."""
+        ped = QFrame()
+        ped.setFrameShape(QFrame.Shape.StyledPanel)
+        v = QVBoxLayout(ped)
+        v.setContentsMargins(8, 6, 8, 8)
+        v.setSpacing(4)
+        head = QHBoxLayout()
+        title = QLabel("Pedestrians")
+        title.setStyleSheet("font-weight: bold; font-size: 14px;")
+        self._ped_state = QLabel("idle")
+        self._ped_state.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        head.addWidget(title)
+        head.addStretch(1)
+        head.addWidget(self._ped_state)
+        v.addLayout(head)
+        self._ped_total = QLabel("0 waiting")
+        self._ped_total.setStyleSheet("color:#9467bd; font-size:18px; font-weight:bold;")
+        v.addWidget(self._ped_total)
+        self._ped_badge = None      # (txt, bg) last applied — skip no-op restyles
+        self._ped_waiting = None    # last waiting count shown
+        self._set_ped_badge(serving=False, waiting=0)
+        return ped
+
+    def _set_ped_badge(self, serving: bool, waiting: int):
+        # Called on every analysis pass (~7 Hz); setStyleSheet forces a widget
+        # repolish, so only touch the labels when something actually changed.
+        if serving:
+            txt, bg = "🚶 CROSSING", "#9467bd"
+        elif waiting > 0:
+            txt, bg = "waiting", "#b58900"
+        else:
+            txt, bg = "idle", "#777"
+        if (txt, bg) != self._ped_badge:
+            self._ped_badge = (txt, bg)
+            self._ped_state.setText(txt)
+            self._ped_state.setStyleSheet(
+                "background:%s; color:white; font-weight:bold; "
+                "padding:2px 8px; border-radius:8px;" % bg)
+        if waiting != self._ped_waiting:
+            self._ped_waiting = waiting
+            self._ped_total.setText("%d waiting" % waiting)
+
+    def _on_ped_status(self, info: dict):
+        """CarlaWorker.ped_status → crossing badge (serving + perceived waiting)."""
+        self._set_ped_badge(bool(info.get("serving")),
+                            int(info.get("perceived", 0)))
 
     def _update_perception(self, results: dict):
         """Refresh the per-arm perceived-car counts + demand from analysis."""
@@ -184,11 +248,158 @@ class IntersectionWindow(QMainWindow):
             self._perc_count[key].setText(str(res.get("count", 0)))
             self._perc_demand[key].setText(
                 "demand %.1f" % res.get("weighted_demand", 0.0))
+        ped_total = sum(r.get("ped_count", 0) for r in results.values())
+        # keep the count fresh; the badge state is owned by ped_status
+        if "CROSSING" not in self._ped_state.text():
+            self._set_ped_badge(serving=False, waiting=ped_total)
 
     def _reset_perception(self):
         for key in ARMS:
             self._perc_count[key].setText("0")
             self._perc_demand[key].setText("demand 0.0")
+        self._set_ped_badge(serving=False, waiting=0)
+
+    def _build_signal_logic_panel(self) -> QWidget:
+        """The 'what the signal logic is using' card under the per-arm counts.
+
+        Reads CarlaWorker.timing_changed. Per axis it pairs the perceived cars
+        considered with the green seconds actually applied (input → output), shows
+        a mode badge (ADAPTIVE/FIXED), a proportional NS-vs-EW split bar, and the
+        verdict. Axis label colours match the bar so the split is read at a glance.
+        """
+        sig = QFrame()
+        sig.setFrameShape(QFrame.Shape.StyledPanel)
+        v = QVBoxLayout(sig)
+        v.setContentsMargins(8, 6, 8, 8)
+        v.setSpacing(6)
+
+        # title + mode badge
+        head = QHBoxLayout()
+        title = QLabel("Signal logic")
+        title.setStyleSheet("font-weight: bold; font-size: 14px;")
+        self._sig_badge = QLabel("—")
+        self._sig_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        head.addWidget(title)
+        head.addStretch(1)
+        head.addWidget(self._sig_badge)
+        v.addLayout(head)
+
+        # per-axis table:  axis | count | → | green / phase
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(3)
+        for col, cap in ((1, "count"), (3, "green / phase")):
+            h = QLabel(cap)
+            h.setStyleSheet("color:#888; font-size:11px;")
+            h.setAlignment(Qt.AlignmentFlag.AlignRight)
+            grid.addWidget(h, 0, col)
+
+        ns_lbl = QLabel("N–S"); ns_lbl.setStyleSheet("color:#4e79a7; font-weight:bold;")
+        ew_lbl = QLabel("E–W"); ew_lbl.setStyleSheet("color:#f28e2b; font-weight:bold;")
+        ped_lbl = QLabel("People"); ped_lbl.setStyleSheet("color:#9467bd; font-weight:bold;")
+        self._sig_ns_cars  = QLabel("—"); self._sig_ew_cars  = QLabel("—")
+        self._sig_ped_count = QLabel("—")
+        self._sig_ns_green = QLabel("—"); self._sig_ew_green = QLabel("—")
+        self._sig_ped_phase = QLabel("—")
+        for w in (self._sig_ns_cars, self._sig_ew_cars, self._sig_ped_count):
+            w.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        for w in (self._sig_ns_green, self._sig_ew_green):
+            w.setStyleSheet("font-size:16px; font-weight:bold;")
+            w.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self._sig_ped_phase.setStyleSheet("font-size:14px; font-weight:bold; color:#888;")
+        self._sig_ped_phase.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        for row, lbl, cnt, right in (
+                (1, ns_lbl,  self._sig_ns_cars,   self._sig_ns_green),
+                (2, ew_lbl,  self._sig_ew_cars,   self._sig_ew_green),
+                (3, ped_lbl, self._sig_ped_count,  self._sig_ped_phase)):
+            arrow = QLabel("→"); arrow.setStyleSheet("color:#888;")
+            grid.addWidget(lbl,   row, 0)
+            grid.addWidget(cnt,   row, 1)
+            grid.addWidget(arrow, row, 2)
+            grid.addWidget(right, row, 3)
+        grid.setColumnStretch(0, 1)
+        v.addLayout(grid)
+
+        # proportional split bar (NS blue vs EW orange) — widths track green times
+        bar = QFrame()
+        bar.setFixedHeight(12)
+        self._sig_bar = QHBoxLayout(bar)
+        self._sig_bar.setContentsMargins(0, 0, 0, 0)
+        self._sig_bar.setSpacing(2)
+        self._sig_bar_ns = QFrame(); self._sig_bar_ns.setStyleSheet("background:#4e79a7; border-radius:3px;")
+        self._sig_bar_ew = QFrame(); self._sig_bar_ew.setStyleSheet("background:#f28e2b; border-radius:3px;")
+        self._sig_bar.addWidget(self._sig_bar_ns)
+        self._sig_bar.addWidget(self._sig_bar_ew)
+        v.addWidget(bar)
+
+        self._sig_decision = QLabel("—")
+        self._sig_decision.setStyleSheet("color:#888;")
+        self._sig_decision.setWordWrap(True)
+        v.addWidget(self._sig_decision)
+
+        self._reset_signal_logic()
+        return sig
+
+    def _set_mode_badge(self, adaptive):
+        """Colour the ADAPTIVE/FIXED pill (None = idle/disconnected)."""
+        txt, bg = {True: ("ADAPTIVE", "#2ca02c"),
+                   False: ("FIXED", "#777")}.get(adaptive, ("—", "#777"))
+        self._sig_badge.setText(txt)
+        self._sig_badge.setStyleSheet(
+            "background:%s; color:white; font-weight:bold; "
+            "padding:2px 8px; border-radius:8px;" % bg)
+
+    def _update_signal_logic(self, info: dict):
+        """Refresh the panel from a CarlaWorker.timing_changed payload (emitted at
+        the start of each green phase): the cars considered, the green seconds
+        applied, the proportional bar, and the verdict."""
+        adaptive = info.get("mode") == "adaptive"
+        self._set_mode_badge(adaptive)
+        ns_g = info.get("ns_green", 0.0)
+        ew_g = info.get("ew_green", 0.0)
+        self._sig_ns_green.setText("%.0f s" % ns_g)
+        self._sig_ew_green.setText("%.0f s" % ew_g)
+        # ×10 so the integer stretch factors keep one-decimal proportion fidelity
+        self._sig_bar.setStretch(0, max(1, int(round(ns_g * 10))))
+        self._sig_bar.setStretch(1, max(1, int(round(ew_g * 10))))
+        nc, ec = info.get("ns_count"), info.get("ew_count")
+        pc = info.get("ped_count")
+        if adaptive and nc is not None:
+            self._sig_ns_cars.setText(str(nc))
+            self._sig_ew_cars.setText(str(ec))
+            decision = info.get("decision") or "—"
+            if pc:
+                self._sig_ped_count.setText(str(pc))
+                self._sig_ped_phase.setText("phase")
+                self._sig_ped_phase.setStyleSheet(
+                    "font-size:14px; font-weight:bold; color:#9467bd;")
+                decision += " · ped phase"
+            else:
+                self._sig_ped_count.setText(str(pc) if pc is not None else "0")
+                self._sig_ped_phase.setText("—")
+                self._sig_ped_phase.setStyleSheet(
+                    "font-size:14px; font-weight:bold; color:#888;")
+            self._sig_decision.setText(decision)
+        else:
+            self._sig_ns_cars.setText("—")
+            self._sig_ew_cars.setText("—")
+            self._sig_ped_count.setText("—")
+            self._sig_ped_phase.setText("—")
+            self._sig_ped_phase.setStyleSheet(
+                "font-size:14px; font-weight:bold; color:#888;")
+            self._sig_decision.setText("fixed schedule — perception not used")
+
+    def _reset_signal_logic(self):
+        self._set_mode_badge(None)
+        for w in (self._sig_ns_cars, self._sig_ew_cars,
+                  self._sig_ns_green, self._sig_ew_green,
+                  self._sig_ped_count, self._sig_ped_phase):
+            w.setText("—")
+        self._sig_ped_phase.setStyleSheet(
+            "font-size:14px; font-weight:bold; color:#888;")
+        self._sig_bar.setStretch(0, 1)
+        self._sig_bar.setStretch(1, 1)
+        self._sig_decision.setText("not connected")
 
     def _build_results_dock(self):
         panel = QWidget()
@@ -333,6 +544,12 @@ class IntersectionWindow(QMainWindow):
                                     arm_label=key,
                                     on_done=on_done,
                                     signal_state=arm.signal_state)
+        # Free the window (and its full-res pixmaps) on close — without this the
+        # kept reference pinned every calibration window ever opened for the
+        # whole session, tens of MB each on an already RAM-tight machine.
+        win.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        win.destroyed.connect(
+            lambda *_: win in self._lane_windows and self._lane_windows.remove(win))
         self._lane_windows.append(win)
         win.show()
 
@@ -378,6 +595,12 @@ class IntersectionWindow(QMainWindow):
         worker.phase_changed.connect(
             self.plan.update_semaphore_states,
             Qt.ConnectionType.QueuedConnection)
+        worker.ped_status.connect(
+            self._on_ped_status,
+            Qt.ConnectionType.QueuedConnection)
+        worker.timing_changed.connect(
+            self._update_signal_logic,
+            Qt.ConnectionType.QueuedConnection)
         worker.status_message.connect(
             self.statusBar().showMessage,
             Qt.ConnectionType.QueuedConnection)
@@ -388,6 +611,7 @@ class IntersectionWindow(QMainWindow):
             self._on_carla_worker_finished,
             Qt.ConnectionType.QueuedConnection)
         self._carla_worker = worker
+        worker.set_adaptive(self._adaptive_enabled)   # honour the toggle's state
         self._connect_action.setEnabled(False)
         self._disconnect_action.setEnabled(True)
         worker.start()
@@ -399,10 +623,11 @@ class IntersectionWindow(QMainWindow):
         (the static pole view is unchanged) but leaves any existing
         calibration intact.
         """
-        os.makedirs(CAPTURES_DIR, exist_ok=True)
+        new = False
         for key, arr in frames.items():
             if key in self._captured_arms or key not in self.intersection.arms:
                 continue
+            os.makedirs(CAPTURES_DIR, exist_ok=True)
             path = os.path.abspath(os.path.join(CAPTURES_DIR, f"{key}.png"))
             try:
                 Image.fromarray(arr).save(path)
@@ -410,17 +635,26 @@ class IntersectionWindow(QMainWindow):
                 self.statusBar().showMessage(f"Could not save {key} frame: {e}")
                 continue
             self._captured_arms.add(key)
+            new = True
             arm = self.intersection.arms[key]
             arm.image = path
             if key == self._selected:
                 self.image_edit.setText(path)
                 self._refresh_status()
-        self.statusBar().showMessage(
-            f"Captured reference frames: {', '.join(sorted(self._captured_arms))}")
+        if new:   # this slot runs on every frame batch — only report fresh grabs
+            self.statusBar().showMessage(
+                f"Captured reference frames: {', '.join(sorted(self._captured_arms))}")
 
     def _cache_latest_frames(self, frames: dict):
         """Keep the most recent live frame per arm for the analysis worker."""
         self._latest_frames.update(frames)
+        # Ack the batch — this is the LAST slot connected to frames_ready, so by
+        # now the display + reference-capture handlers have run. Re-arms the
+        # worker's frame emitter (backpressure: it holds further frame batches
+        # until this one was fully processed, so the event queue can't pile up
+        # 25 MB frame events faster than the GUI consumes them).
+        if self._carla_worker is not None:
+            self._carla_worker.frames_displayed()
 
     def get_latest_frames(self) -> dict:
         """Thread-safe-enough snapshot of the latest frames for AnalysisWorker."""
@@ -472,15 +706,39 @@ class IntersectionWindow(QMainWindow):
             self._analysis_worker = None
         self._yolo_action.setText("▶ Run YOLO (live)")
         for key in ARMS:                 # drop stale overlays so they don't trail
-            self._camera_panel.set_overlay(key, [])
+            self._camera_panel.set_overlays(key, [], [])
         self._reset_perception()
+
+    def on_toggle_adaptive(self, checked: bool):
+        """Toggle perceived-demand-driven signal timing on the running worker."""
+        self._adaptive_enabled = checked
+        self._adaptive_action.setText(
+            "🧠 Adaptive signals (on)" if checked else "🧠 Adaptive signals (off)")
+        if self._carla_worker is not None:
+            self._carla_worker.set_adaptive(checked)
+            # reflect the intent immediately; the seconds + counts update when the
+            # worker emits timing_changed at the next green-phase start.
+            self._set_mode_badge(checked)
+            self._sig_decision.setText("applies next green…")
+        if checked and self._analysis_worker is None:
+            self.statusBar().showMessage(
+                "Adaptive on — start live YOLO so perceived demand can drive timing.")
 
     def _on_analysis(self, results: dict):
         """Per-arm tracked results → camera overlays + live weighted demand."""
         for key, res in results.items():
-            self._camera_panel.set_overlay(key, res.get("tracks", []))
+            self._camera_panel.set_overlays(key, res.get("tracks", []),
+                                            res.get("peds", []))
         self._update_perception(results)
         self._show_live_demand(results)
+        # Feed perceived car + pedestrian counts into the signal loop (the worker
+        # only acts on them when adaptive is enabled; it reads the latest snapshot
+        # each tick).
+        if self._carla_worker is not None:
+            self._carla_worker.update_counts(
+                {k: r.get("count", 0) for k, r in results.items()})
+            self._carla_worker.update_ped_counts(
+                {k: r.get("ped_count", 0) for k, r in results.items()})
 
     def _show_live_demand(self, results: dict):
         self.results_tree.clear()
@@ -512,6 +770,7 @@ class IntersectionWindow(QMainWindow):
             self._carla_worker.deleteLater()
             self._carla_worker = None
         self._camera_panel.clear()
+        self._reset_signal_logic()
         self._connect_action.setEnabled(True)
         self._disconnect_action.setEnabled(False)
 

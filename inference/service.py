@@ -9,10 +9,11 @@ Ownership split:
   * service (here): pixels -> detections   (YOLO + torch, the only torch in play)
   * app (3.7):       detections -> demand   (lane assignment, distance weighting)
 
-The client crops each frame to its incoming-lane ROI before sending, so we only
-ever run YOLO on the lane region at high detail — high effective resolution
-where demand is measured, a fraction of the pixels. Boxes come back in
-crop-local coordinates; the client offsets them into full-frame space.
+The client crops each frame before sending — the incoming-lane ROI (vehicles,
+high detail) and a separate, decimated crossing ROI (persons) — so we only ever
+run YOLO on the regions that matter, each asking just for the classes it can
+contain. Boxes come back in crop-local coordinates; the client maps them into
+full-frame space.
 
 Per-frame detection only — no tracking. At the achievable frame rate ByteTrack
 couldn't follow fast cars (boxes anchored to a spot, re-triggered by passing
@@ -36,6 +37,13 @@ from protocol import DEFAULT_SOCKET_PATH, recv_message, send_message  # noqa: E4
 DEFAULT_MODEL = "models/yolov8n.pt"
 DEFAULT_CONF = 0.20
 VEHICLE_CLASSES = {1, 2, 3, 5, 7}       # COCO: bicycle, car, motorcycle, bus, truck
+PERSON_CLASSES = {0}                    # COCO: person — pedestrians
+# Everything we return; the client routes by the cls NAME ("person" vs vehicle).
+KEEP_CLASSES = VEHICLE_CLASSES | PERSON_CLASSES
+# Per-crop class filter: each crop's header says what it WANTS ("vehicles" for
+# the lane ROI, "persons" for the crossing ROI), so a car silhouette on the
+# sidewalk or a person between cars never crosses into the wrong count.
+WANT_CLASSES = {"vehicles": VEHICLE_CLASSES, "persons": PERSON_CLASSES}
 
 
 class InferenceServer:
@@ -66,9 +74,6 @@ class InferenceServer:
         crops_meta = header["crops"]
         conf = header.get("conf", DEFAULT_CONF)
         imgsz = header.get("imgsz")
-        pkw = {"conf": conf, "device": self._device, "verbose": False}
-        if imgsz:
-            pkw["imgsz"] = imgsz
 
         model = self._load()
         names = model.names
@@ -78,11 +83,16 @@ class InferenceServer:
             crop = np.frombuffer(payload[off:off + n], dtype=np.uint8) \
                 .reshape((c["h"], c["w"], 3))
             off += n
+            keep = WANT_CLASSES.get(c.get("want"), KEEP_CLASSES)
+            pkw = {"conf": conf, "device": self._device, "verbose": False,
+                   "classes": sorted(keep)}   # filter at NMS, not after
+            if c.get("imgsz") or imgsz:       # per-crop override, header fallback
+                pkw["imgsz"] = c.get("imgsz") or imgsz
             res = model.predict(crop, **pkw)[0]   # rectangular letterbox = fast
             dets = []
             for b in res.boxes:
                 cls = int(b.cls)
-                if cls not in VEHICLE_CLASSES:
+                if cls not in keep:
                     continue
                 x1, y1, x2, y2 = b.xyxy[0].tolist()
                 dets.append({
@@ -91,7 +101,7 @@ class InferenceServer:
                     "cls": names[cls],
                     "conf": float(b.conf),
                 })
-            out[c["arm"]] = dets
+            out[c.get("key", c.get("arm"))] = dets
         return {"type": "detections", "results": out}
 
     def handle(self, header, payload):
