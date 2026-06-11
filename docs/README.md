@@ -1,6 +1,6 @@
 # SemOptimizer
 
-[Demo.webm](https://github.com/user-attachments/assets/7baffe54-7f37-4349-9f0c-812bfd65f969)
+[Demo.webm](https://github.com/user-attachments/assets/642373c6-acc4-4372-a894-72c09bef11aa)
 [ArmCalibrationDemo.webm](https://github.com/user-attachments/assets/3648e05c-7ac3-4794-9408-bb3e7332356b)
 
 
